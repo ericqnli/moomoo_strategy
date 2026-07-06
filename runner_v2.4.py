@@ -1,11 +1,12 @@
 # runner_v2.4.py
 # QA Strategy v2.4 - RiskManager版 (修复数据不足)
 
-from moomoo import *
+from moomoo import * # type: ignore
 import pandas as pd
 import yaml
 import time
 from datetime import datetime, timedelta
+from typing import Any, Optional, cast
 from strategy_core import get_signal, generate_atr_trailing_stop_signal, calc_atr
 from monitor import Monitor
 from risk_manager import RiskManager
@@ -20,18 +21,32 @@ class MoomooStrategyRunner:
         self.positions = {code: 0 for code in self.config['symbols']}
         print(f"[{datetime.now()}] === QA Strategy v2.4 (RiskManager版) 启动 ===")
 
-    def get_history(self, code):
+    def get_history(self, code: str) -> Optional[pd.DataFrame]:
         full_code = f"US.{code}" if not code.startswith("US.") else code
-        end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")  # 增加到400天
+        end: str = datetime.now().strftime("%Y-%m-%d")
+        start: str = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")  # 增加到400天
         ret, data, _ = self.quote_ctx.request_history_kline(full_code, start=start, end=end, ktype=KLType.K_DAY, max_count=300)
-        if ret == RET_OK and len(data) > 0:
-            df = pd.DataFrame(data)
-            print(f"✅ {code} 获取 {len(df)} 条K线")
-            return df
-        else:
-            print(f"❌ {code} K线获取失败")
+
+        if ret != RET_OK:
+            print(f"❌ {code} K线获取失败: ret={ret}")
             return None
+
+        if isinstance(data, pd.DataFrame):
+            if data.empty:
+                print(f"❌ {code} K线为空 DataFrame")
+                return None
+            df = data.copy()
+        elif isinstance(data, (list, tuple)):
+            if len(data) == 0:
+                print(f"❌ {code} K线获取失败: data empty")
+                return None
+            df = pd.DataFrame(data)
+        else:
+            print(f"❌ {code} K线类型不支持: {type(data).__name__}")
+            return None
+
+        print(f"✅ {code} 获取 {len(df)} 条K线")
+        return df
 
     def run_cycle(self):
         for code in self.config['symbols']:
