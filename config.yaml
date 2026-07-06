@@ -1,0 +1,30 @@
+# moomoo_strategy config v2.4
+symbols:
+  - BRK.B
+  - SPY
+  - QQQ
+
+# 数据设置
+ktype: K_DAY
+history_days: 200
+max_count: 300
+
+# 信号参数
+rsi_max_for_buy: 46
+rsi_min_for_sell: 68
+atr_period: 14
+atr_mult: 3.0
+volume_mult: 0.5
+
+volume_confirm_mult_buy: 0.8
+volume_confirm_mult_sell: 1.5
+
+# 仓位
+max_position_pct: 0.35
+initial_shares: 50
+
+# Telegram 配置（在这里填你的信息）
+telegram_bot_token: "8992336441:AAHuVCImG322V3p_jVaxh6Y0se51VXs1jcs" 
+telegram_chat_id: " -5585097609"       
+
+trade_mode: paper
