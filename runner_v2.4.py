@@ -1,5 +1,6 @@
 # runner_v2.4.py
 # QA Strategy v2.4 - RiskManager版 (修复数据不足)
+# 已集成 Monitor 模块，买入/卖出信号会实时推送到 Telegram
 
 from moomoo import * # type: ignore
 import pandas as pd
@@ -20,6 +21,7 @@ class MoomooStrategyRunner:
         self.risk = RiskManager(self.config)
         self.positions = {code: 0 for code in self.config['symbols']}
         print(f"[{datetime.now()}] === QA Strategy v2.4 (RiskManager版) 启动 ===")
+        self.monitor.send_telegram("✅ QA Strategy v2.4 (RiskManager版) 启动")
 
     def get_history(self, code: str) -> Optional[pd.DataFrame]:
         full_code = f"US.{code}" if not code.startswith("US.") else code
@@ -64,15 +66,16 @@ class MoomooStrategyRunner:
             atr_signal = generate_atr_trailing_stop_signal(df, current_price, self.positions[code], self.config)
 
             if signal == 'buy' and self.positions[code] == 0:
-                msg = f"🟢 {code} 买入信号！价格: {current_price:.2f}"
+                msg = f"🟢 代码: {code} | 价格: {current_price:.2f} | 信号: 买入"
                 self.monitor.send_telegram(msg)
                 self.positions[code] = 50
 
             elif signal == 'sell' or atr_signal == 'atr_trailing_sell':
                 if self.positions[code] > 0:
-                    msg = f"🔴 {code} 卖出/止损！价格: {current_price:.2f}"
+                    signal_type = '卖出' if signal == 'sell' else '止损'
+                    msg = f"🔴 代码: {code} | 价格: {current_price:.2f} | 信号: {signal_type}"
                     self.monitor.send_telegram(msg)
-                    self.positions[code] = 0
+                    self.positions[code] = 0                    
 
             self.monitor.log(f"{code} | 价: {current_price:.2f} | 信号: {signal} | ATR: {atr_signal} | 持仓: {self.positions[code]}")
 
