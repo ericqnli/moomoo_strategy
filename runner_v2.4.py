@@ -2,15 +2,24 @@
 # QA Strategy v2.4 - RiskManager版 (修复数据不足)
 # 已集成 Monitor 模块，买入/卖出信号会实时推送到 Telegram
 
-from moomoo import * # type: ignore
+from moomoo import OpenQuoteContext, KLType, RET_OK
 import pandas as pd
 import yaml
 import time
+import signal
 from datetime import datetime, timedelta
 from typing import Any, Optional, cast
 from strategy_core import get_signal, generate_atr_trailing_stop_signal, calc_atr
 from monitor import Monitor
 from risk_manager import RiskManager
+
+class GracefulStop(Exception):
+    pass
+
+
+def handle_shutdown_signal(signum, _frame):
+    raise GracefulStop(f"收到信号 {signum}")
+
 
 class MoomooStrategyRunner:
     def __init__(self, config_path="config.yaml"):
@@ -20,6 +29,7 @@ class MoomooStrategyRunner:
         self.monitor = Monitor(self.config)
         self.risk = RiskManager(self.config)
         self.positions = {code: 0 for code in self.config['symbols']}
+        self._closed = False
         print(f"[{datetime.now()}] === QA Strategy v2.4 (RiskManager版) 启动 ===")
         self.monitor.send_telegram("✅ QA Strategy v2.4 (RiskManager版) 启动")
 
@@ -80,15 +90,30 @@ class MoomooStrategyRunner:
             self.monitor.log(f"{code} | 价: {current_price:.2f} | 信号: {signal} | ATR: {atr_signal} | 持仓: {self.positions[code]}")
 
     def close(self):
-        self.quote_ctx.close()
+        if self._closed:
+            return
+        try:
+            self.quote_ctx.close()
+        except Exception as e:
+            print(f"关闭资源失败: {e}")
+        finally:
+            self._closed = True
 
 if __name__ == "__main__":
-    runner = MoomooStrategyRunner()
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    signal.signal(signal.SIGTSTP, handle_shutdown_signal)
+
+    runner: Optional[MoomooStrategyRunner] = None
     try:
+        runner = MoomooStrategyRunner()
         while True:
             runner.run_cycle()
             time.sleep(30)
-    except KeyboardInterrupt:
-        print("策略停止")
+    except (KeyboardInterrupt, GracefulStop) as exc:
+        print(f"收到停止信号，准备停止策略... {exc}")
+        if runner is not None:
+            runner.monitor.send_telegram("🛑 QA Strategy v2.4 (RiskManager版) 停止")
     finally:
-        runner.close()
+        if runner is not None:
+            runner.close()
