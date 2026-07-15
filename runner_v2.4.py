@@ -35,19 +35,30 @@ class MoomooStrategyRunner:
         full_code = f"US.{code}" if not code.startswith("US.") else code
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
-        
+
         ret, data, _ = self.quote_ctx.request_history_kline(
-            full_code, start=start, end=end, 
+            full_code, start=start, end=end,
             ktype=KLType.K_DAY, max_count=300
         )
-        
-        if ret != RET_OK or data is None or len(data) == 0:
+                # 检查返回结果（解决类型错误）
+        if ret != RET_OK or data is None:
             print(f"❌ {code} K线获取失败: ret={ret}, data={data}")
             return None
+
+        if isinstance(data, (list, pd.DataFrame, tuple)) and len(data) == 0:
+            print(f"❌ {code} K线获取失败: 数据为空")
+            return None
+
+                # 安全转为 DataFrame
+        if isinstance(data, pd.DataFrame):
+            df = data
+        else:
+            # 明确告诉 Pylance 这里 data 是可接受的类型
+            df = pd.DataFrame(data)  # type: ignore[arg-type]
         
-        df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
         print(f"✅ {code} 获取 {len(df)} 条K线")
         return df
+        
 
     def run_cycle(self):
         for code in self.config['symbols']:
