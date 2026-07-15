@@ -1,4 +1,4 @@
-# moomoo_strategy config v2.4
+# moomoo_strategy config v2.5 (Four-Element + Divergence)
 symbols:
   - BRK.B
   - SPY
@@ -6,25 +6,46 @@ symbols:
 
 # 数据设置
 ktype: K_DAY
-history_days: 200
+history_days: 250
 max_count: 300
 
-# 信号参数
+# ==================== 四要素策略核心参数 ====================
+signal_level: 2                    # 1=强, 2=中(推荐), 3=弱
+require_golden_cross: false        # 是否强制MACD金叉
+require_both_divergence: false     # True=必须MACD+RSI双背离
+
+rsi_oversell: 40
+rsi_overbuy: 60
+vol_multiple: 1.5                  # 放量倍数
+trend_ma_period: 20                # 趋势过滤均线
+
+# 背离参数（pt2.0 亮点）
+diver_bar_count: 20
+min_wave_gap: 4
+use_macd_divergence: true
+use_rsi_divergence: true
+
+enable_trend_filter: true
+enable_cycle_resonance: false      # 预留60min共振
+
+# ==================== 原有参数（保留兼容） ====================
 rsi_max_for_buy: 46
 rsi_min_for_sell: 68
 atr_period: 14
-atr_mult: 3.0
+atr_mult: 2.0
 volume_mult: 0.5
-
 volume_confirm_mult_buy: 0.8
 volume_confirm_mult_sell: 1.5
+highest_window: 60
 
-# 仓位
-max_position_pct: 0.35
+# 仓位与风控
+max_position_pct: 0.30
 initial_shares: 50
+stop_loss_atr_multiple: 2.0
+take_profit_ratio: 0.12            # 12% 分批止盈
 
-# Telegram 配置（在这里填你的信息）
-telegram_bot_token: "8782898098:AAHd82YXb7X-3wfaAOLo13JNT4BA8BP8oMI" 
-telegram_chat_id: "-1004356414210"       
+# Telegram 配置
+telegram_bot_token: "8782898098:AAHd82YXb7X-3wfaAOLo13JNT4BA8BP8oMI"
+telegram_chat_id: "5576215521"
 
 trade_mode: paper

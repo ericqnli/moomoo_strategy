@@ -14,7 +14,7 @@ logs/
 *.tar.gz
 *.gz
 moomoo_strategy_latest.tar.gz
-test_telegram.py
+test_*py
 
 # Old versions
 old_versions/

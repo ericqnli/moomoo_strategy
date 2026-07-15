@@ -1,28 +1,28 @@
 # moomoo_strategy 项目
 
-**版本**：v2.4 (RiskManager版)
-**目标**：ATR + MA + Volume Filter + 200/20日均线风控
+**版本**：v2.5 (Four-Element + RiskManager版)  
+**目标**：MACD金死叉 + RSI过滤 + 顶底背离 + 放量 + 趋势过滤 + 风控
+
+## 核心策略（四要素）
+
+- **MACD** 金叉/死叉
+- **RSI** 超买超卖过滤
+- **顶底背离**（MACD + RSI 双波段）
+- **放量确认**
+- **趋势过滤**（站上20日均线）
 
 ## 文件结构
-- runner_v2.4.py : 主程序入口
-- strategy_core.py : 信号逻辑 (MACD/RSI/Volume/ATR)
-- risk_manager.py : 风控 (均线保护 + 仓位)
-- monitor.py : Telegram / 日志
-- executor.py : 下单执行 (paper/live)
-- config.yaml : 参数配置
+
+- `runner_v2.4.py`：主程序入口（已集成 RiskManager）
+- `strategy_core.py`：**核心信号逻辑**（四要素 + pt2.0 背离）
+- `risk_manager.py`：风控模块（MA保护 + ATR止损 + 动态仓位）
+- `monitor.py`：Telegram 通知 + 日志
+- `config.yaml`：参数配置（含四要素开关）
+- `executor.py`：下单执行（paper/live）
 
 ## 如何运行
-1. cd ~/moomoo_strategy
-2. python runner_v2.4.py
 
-## 配置
-在 config.yaml 中设置 Telegram Token 和 Chat ID
-
-## 版本历史
-- v2.4 : 接入 RiskManager (200/20 MA保护)
-- v2.3 : 独立 Monitor + Telegram
-- v2.2 : 完整信号逻辑
-
-## 注意
-- 美股代码自动加 US. 前缀
-- 目前为 Paper 模式 (安全)
+```bash
+cd ~/projects/moomoo_strategy
+source venv/bin/activate
+python runner_v2.4.py
