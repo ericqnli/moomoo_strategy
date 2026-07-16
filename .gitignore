@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .venv/
 env/
+test_*
 
 # Logs
 logs/
@@ -14,15 +15,19 @@ logs/
 *.tar.gz
 *.gz
 moomoo_strategy_latest.tar.gz
-test_*py
 
-# Old versions
-old_versions/
+# Runtime state (cash / positions)
+state/
+*.tmp
+
+# Secrets
+.env
+config.local.yaml
 
 # IDE / OS
 .DS_Store
 .vscode/
 .idea/
 
-# Config with secrets (if any)
-# config.yaml   # 如果里面有 token，建议暂时不提交
+# Old versions
+old_versions/
