@@ -166,7 +166,13 @@ def get_signal(df, current_price, atr, config):
 def generate_atr_trailing_stop_signal(df, current_price, current_pos, config):
     if current_pos <= 0 or len(df) < config.get('highest_window', 60):
         return 'none'
-    atr = calc_atr(df, config.get('atr_period', 14)).iloc[-1]
+    atr_series = calc_atr(df, config.get('atr_period', 14))
+    if atr_series is None or atr_series.empty:
+        return 'none'
+    try:
+        atr = float(atr_series.iloc[-1])
+    except (TypeError, ValueError):
+        return 'none'
     if pd.isna(atr) or atr <= 0:
         return 'none'
     recent_high = df['high'].iloc[-config.get('highest_window', 60):].max()

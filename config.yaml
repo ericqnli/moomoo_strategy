@@ -1,4 +1,6 @@
 # moomoo_strategy config v2.5 (Four-Element + Divergence)
+# 密钥请放 .env（见 .env.example），不要写在本文件
+
 symbols:
   - BRK.B
   - SPY
@@ -8,6 +10,7 @@ symbols:
 ktype: K_DAY
 history_days: 250
 max_count: 300
+poll_interval_sec: 30
 
 # ==================== 四要素策略核心参数 ====================
 signal_level: 2                    # 1=强, 2=中(推荐), 3=弱
@@ -39,13 +42,18 @@ volume_confirm_mult_sell: 1.5
 highest_window: 60
 
 # 仓位与风控
+initial_cash: 100000               # 账户初始资金（paper）
+positions_file: state/positions.json
 max_position_pct: 0.30
-initial_shares: 50
-stop_loss_atr_multiple: 2.0
-take_profit_ratio: 0.12            # 12% 分批止盈
+initial_shares: 50                 # 动态仓位算不出时的兜底股数
+stop_loss_atr_multiple: 2.0        # 入场价 - N*ATR 止损
+take_profit_ratio: 0.12            # 12% 止盈
+take_profit_fraction: 1.0          # 1.0=全平; 0.5=先平一半
 
-# Telegram 配置
-telegram_bot_token: "8782898098:AAHd82YXb7X-3wfaAOLo13JNT4BA8BP8oMI"
-telegram_chat_id: "5576215521"
+# Telegram: 使用环境变量或 .env
+# TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+# （可选兼容字段，勿提交真实 token）
+# telegram_bot_token: ""
+# telegram_chat_id: ""
 
-trade_mode: paper
+trade_mode: paper                  # paper | live（live 实盘下单尚未开放）
