@@ -1,10 +1,82 @@
 # moomoo_strategy config v2.5 (Four-Element + Divergence)
 # 密钥请放 .env（见 .env.example），不要写在本文件
 
-symbols:
-  - BRK.B
-  - SPY
-  - QQQ
+# ==================== 股票来源（四选一） ====================
+# mode:
+#   fixed     - 固定列表（universe.symbols，兼容旧顶层 symbols）
+#   dynamic   - moomoo 条件选股 get_stock_filter
+#   watchlist - 账号自选股分组 get_user_security
+#   account   - 账号持仓 position_list_query（需 OpenD 登录交易）
+universe:
+  mode: fixed
+  refresh_sec: 86400         # 非 fixed 刷新间隔秒；基本面建议日更；0=每轮都刷
+  max_symbols: 50            # 上限，防止扫描过多
+  include_held: true         # 始终并入本地已有持仓，保证能止损/止盈
+  only_stocks: true
+  default_market: US
+
+  # mode=fixed
+  symbols:
+    - BRK.B
+    - SPY
+    - QQQ
+
+  # mode=watchlist（分组名与 App 自选一致，常见「全部」）
+  watchlist_group: "全部"
+
+  # mode=account
+  account:
+    host: "127.0.0.1"
+    port: 11111
+    trd_env: SIMULATE          # SIMULATE | REAL
+    trd_market: US
+    position_market: NONE
+    acc_id: 0
+    acc_index: 0
+
+  # mode=dynamic — 只做基本面/行业/估值粗筛，不含 MACD/RSI 等技术信号
+  # 技术买卖信号仍由 strategy_core 四要素负责
+  # 行业：plate_code 单个，或 plate_codes 多个（分别查询后取并集）
+  #   可用 quote_ctx.get_plate_list(Market.US, Plate.INDUSTRY) 查板块代码
+  # 市值单位：以 OpenD 返回为准（常见为原始货币数值，需实测校准）
+  dynamic:
+    market: US
+    plate_code: null           # 例: 某个行业板块代码；null=不限行业
+    # plate_codes:             # 多行业并集（可选）
+    #   - "US.xxxx"
+    begin: 0
+    num: 40
+    filters:
+      # 价格：最低流动性门槛（非技术信号）
+      - type: simple
+        field: CUR_PRICE
+        min: 10
+        max: 1000
+      # 总市值：中大盘（数值请按 OpenD 实测校准）
+      - type: simple
+        field: MARKET_VAL
+        min: 10000000000       # 约 100 亿量级，单位需实测
+        sort: DESCEND          # 多条件里只能有一个 sort
+      # 市盈率 TTM：排除亏损极值与泡沫估值
+      - type: simple
+        field: PE_TTM
+        min: 5
+        max: 35
+      # 可选：市净率
+      # - type: simple
+      #   field: PB_RATE
+      #   min: 0.5
+      #   max: 8
+      # 可选：财报类（需 quarter）
+      # - type: financial
+      #   field: NET_PROFIX_GROWTH
+      #   min: 0
+      #   max: 100
+      #   quarter: ANNUAL
+
+# 兼容旧配置：若未写 universe，仍可读顶层 symbols
+# symbols:
+#   - BRK.B
 
 # 数据设置
 ktype: K_DAY
@@ -12,24 +84,51 @@ history_days: 250
 max_count: 300
 poll_interval_sec: 30
 
-# ==================== 四要素策略核心参数 ====================
-signal_level: 2                    # 1=强, 2=中(推荐), 3=弱
-require_golden_cross: false        # 是否强制MACD金叉
-require_both_divergence: false     # True=必须MACD+RSI双背离
+# ==================== 日志 ====================
+# detail 与轮询解耦：策略可 30s 检查，因子明细默认每天每票一条
+logging:
+  dir: logs
+  detail_mode: daily           # daily | interval | every_cycle | off
+  detail_interval_sec: 86400   # 仅 interval 时生效
+  always_log_events: true      # 成交/失败/门禁拦截即时写入 runner_日期.log
+  include_none: true           # daily 时 none 也写一条（复盘用）
+  console: signal              # quiet | signal | detail
+  # runner_YYYY-MM-DD.log : [DETAIL] 因子 + [EVENT] 事件
+  # risk_YYYY-MM-DD.log   : 成交（risk_manager，保留）
 
-rsi_oversell: 40
-rsi_overbuy: 60
-vol_multiple: 1.5                  # 放量倍数
-trend_ma_period: 20                # 趋势过滤均线
+# ==================== 信号档位（金/死叉扳机 + L1/L2/L3） ====================
+# 买必须金叉 / 卖必须死叉
+# L1: 叉 + (div近窗|rsi|vol|trend) 任一
+# L2: 叉 + RSI门槛 + (div近窗|vol|trend) 任一   ← 默认
+# L3: 叉 + RSI门槛 + 近窗背离 + (vol|trend) 任一
+# 买卖可分档；仓位大小仍用 position_level（原 signal_level）
+buy_level: 2
+sell_level: 2
 
-# 背离参数（pt2.0 亮点）
-diver_bar_count: 20
+rsi_buy_max: 50                    # L2/L3 买入 RSI 上限
+rsi_sell_min: 55                   # L2/L3 卖出 RSI 下限
+vol_multiple: 1.3                  # 放量倍数
+trend_ma_period: 20                # trend：买价>MA / 卖价<MA
+enable_trend_filter: true          # false 则 trend 不参与凑数
+
+# 背离：结构窗口 + 近窗有效（不要求与交叉同一根）
+div_lookback: 20                   # 背离结构回看（兼容 diver_bar_count）
+div_active_bars: 10                # 近窗：最近 N 个结束点任一满足即有效
+diver_bar_count: 20                # 兼容旧键（与 div_lookback 二选一优先 div_lookback）
 min_wave_gap: 4
 use_macd_divergence: true
 use_rsi_divergence: true
+require_both_divergence: false     # true=MACD且RSI双背离；false=OR
 
-enable_trend_filter: true
-enable_cycle_resonance: false      # 预留60min共振
+# 仓位强度（与 buy/sell_level 独立）：1 偏大仓 / 2 中 / 3 偏小仓
+position_level: 2
+signal_level: 2                    # 兼容旧键；仓位优先读 position_level
+
+# 兼容旧字段（信号逻辑已不依赖）
+require_golden_cross: true         # 文档用：现行逻辑买卖均强制叉
+rsi_oversell: 50                   # 未设 rsi_buy_max 时的回退
+rsi_overbuy: 55                    # 未设 rsi_sell_min 时的回退
+enable_cycle_resonance: false
 
 # ==================== 原有参数（保留兼容） ====================
 rsi_max_for_buy: 46
@@ -41,7 +140,7 @@ volume_confirm_mult_buy: 0.8
 volume_confirm_mult_sell: 1.5
 highest_window: 60
 
-# 仓位与风控
+# 仓位与风控（独立于信号档位）
 initial_cash: 100000               # 账户初始资金（paper）
 positions_file: state/positions.json
 max_position_pct: 0.30
@@ -56,4 +155,39 @@ take_profit_fraction: 1.0          # 1.0=全平; 0.5=先平一半
 # telegram_bot_token: ""
 # telegram_chat_id: ""
 
-trade_mode: paper                  # paper | live（live 实盘下单尚未开放）
+# ==================== 下单模式 ====================
+# paper = 本地模拟（默认，安全）
+# live  = 走 moomoo 交易 API（见 live 段；默认 SIMULATE 模拟盘）
+trade_mode: paper
+
+# live 专用（仅 trade_mode: live 时使用）
+live:
+  host: "127.0.0.1"
+  port: 11111
+  trd_env: SIMULATE              # SIMULATE=官方模拟盘 | REAL=真金（需 allow_real）
+  allow_real: false              # 第三层：禁止误开 REAL，真金须改 true
+  trd_market: US
+  acc_id: 0
+  acc_index: 0
+  order_type: NORMAL             # 限价；价格用策略传入的 current_price
+  fill_outside_rth: false
+  remark: "qa-strategy"
+  default_market: US
+  # 解锁密码勿写进 yaml，放到 .env：
+  # TRADE_UNLOCK_PWD=你的交易密码
+  # 或 TRADE_UNLOCK_PWD_MD5=...
+
+# ==================== 回测 backtester.py ====================
+# python backtester.py
+# python backtester.py --start 2022-01-01 --end 2025-12-31 --symbols SPY,QQQ,BRK.B
+backtest:
+  start: "2023-01-01"              # 回测开始（可自定 / CLI 覆盖）
+  end: "2025-12-31"                # 回测结束
+  symbols:                         # 自定义股票池（不配则回退 universe.symbols）
+    - SPY
+    - QQQ
+    - BRK.B
+  fee_rate: 0.0001                 # 买卖各边万分之一
+  benchmark: ".SPX"                # 基准 S&P500（行情 US..SPX）
+  initial_cash: 100000             # 不填则用上面 initial_cash
+  warmup_calendar_days: 450        # 信号预热多拉的日历天数（MA200 等）

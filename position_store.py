@@ -49,24 +49,35 @@ class PositionStore:
 
         self.cash = float(data.get("cash", self.initial_cash))
         loaded = data.get("positions") or {}
-        for code in self.symbols:
+
+        # 兼容旧格式: {"SPY": 50}
+        legacy_flat = bool(loaded) and all(not isinstance(v, dict) for v in loaded.values())
+
+        # 并入：初始 symbols + 文件中有记录的代码（动态股票池切换后仍能恢复持仓）
+        codes = list(self.symbols)
+        for code in loaded.keys():
+            if code not in codes:
+                codes.append(code)
+
+        for code in codes:
+            if legacy_flat:
+                self.positions[code] = {
+                    "shares": int(loaded.get(code) or 0),
+                    "entry_price": 0.0,
+                    "entry_time": None,
+                    "partial_tp_done": False,
+                }
+                continue
             raw = loaded.get(code) or {}
+            if not isinstance(raw, dict):
+                raw = {}
             self.positions[code] = {
                 "shares": int(raw.get("shares", 0) or 0),
                 "entry_price": float(raw.get("entry_price", 0) or 0),
                 "entry_time": raw.get("entry_time"),
                 "partial_tp_done": bool(raw.get("partial_tp_done", False)),
             }
-        # 兼容旧格式: {"SPY": 50}
-        if loaded and all(not isinstance(v, dict) for v in loaded.values()):
-            for code, shares in loaded.items():
-                if code in self.positions:
-                    self.positions[code] = {
-                        "shares": int(shares or 0),
-                        "entry_price": 0.0,
-                        "entry_time": None,
-                        "partial_tp_done": False,
-                    }
+        self.symbols = list(dict.fromkeys(list(self.symbols) + list(self.positions.keys())))
 
     def save(self) -> None:
         parent = os.path.dirname(self.path)
@@ -81,6 +92,19 @@ class PositionStore:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.path)
+
+    def ensure_symbol(self, code: str) -> None:
+        """动态股票池：确保 code 在账本中有条目。"""
+        if not code:
+            return
+        if code not in self.positions:
+            self.positions[code] = self._empty_pos()
+        if code not in self.symbols:
+            self.symbols.append(code)
+
+    def held_codes(self) -> list:
+        """当前有持仓的代码列表。"""
+        return [c for c, p in self.positions.items() if int(p.get("shares") or 0) > 0]
 
     def shares(self, code: str) -> int:
         return int(self.positions.get(code, self._empty_pos())["shares"])
@@ -101,6 +125,7 @@ class PositionStore:
         cost = shares * price
         if cost > self.cash + 1e-9:
             return False
+        self.ensure_symbol(code)
         self.cash -= cost
         self.positions[code] = {
             "shares": shares,
@@ -119,6 +144,7 @@ class PositionStore:
         mark_partial_tp: bool = False,
     ) -> bool:
         """减仓或平仓：回收现金。"""
+        self.ensure_symbol(code)
         pos = self.positions.get(code, self._empty_pos())
         held = int(pos["shares"])
         if shares <= 0 or price <= 0 or held <= 0:
@@ -143,7 +169,13 @@ class PositionStore:
 
     def summary_line(self) -> str:
         parts = [f"现金:{self.cash:.2f}"]
-        for code in self.symbols:
+        # 有持仓的优先；其余按 symbols 顺序
+        seen = set()
+        ordered = list(self.held_codes()) + [c for c in self.symbols if c not in self.held_codes()]
+        for code in ordered:
+            if code in seen:
+                continue
+            seen.add(code)
             s = self.shares(code)
             if s > 0:
                 ep = self.entry_price(code)

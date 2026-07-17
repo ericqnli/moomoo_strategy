@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from strategy_core import (
-    get_signal,
+    evaluate_signal,
     generate_atr_trailing_stop_signal,
     calc_atr,
 )
@@ -17,6 +17,7 @@ from monitor import Monitor
 from risk_manager import RiskManager
 from executor import Executor
 from position_store import PositionStore
+from universe import UniverseProvider, to_full_code
 from env_util import load_dotenv
 
 
@@ -38,28 +39,41 @@ class MoomooStrategyRunner:
         self.monitor = Monitor(self.config)
         self.risk = RiskManager(self.config)
         self.executor = Executor(self.config)
+        self.universe = UniverseProvider(self.config, self.quote_ctx)
 
+        # 启动时解析一次股票列表（fixed 即时可用；远程源可能稍后 refresh）
+        bootstrap = self.universe.get_symbols(force=True)
         initial_cash = float(self.config.get("initial_cash", 100_000))
         state_path = self.config.get("positions_file", "state/positions.json")
         self.store = PositionStore(
             path=state_path,
-            symbols=self.config["symbols"],
+            symbols=bootstrap,
             initial_cash=initial_cash,
         )
         self.poll_interval = int(self.config.get("poll_interval_sec", 30))
         self._closed = False
 
         mode = self.config.get("trade_mode", "paper")
-        print(
-            f"[{datetime.now()}] === QA Strategy v2.5 启动 === "
-            f"mode={mode} | {self.store.summary_line()}"
+        buy_lv = self.config.get("buy_level", 2)
+        sell_lv = self.config.get("sell_level", 2)
+        start_msg = (
+            f"=== QA Strategy v2.6 启动 === mode={mode} "
+            f"buy_level={buy_lv} sell_level={sell_lv} | "
+            f"universe={self.universe.summary()} | "
+            f"symbols={bootstrap} | {self.store.summary_line()}"
         )
+        print(f"[{datetime.now()}] {start_msg}")
+        self.monitor.log_event(start_msg)
         self.monitor.send_telegram(
-            f"✅ QA Strategy v2.5 已启动 | mode={mode} | {self.store.summary_line()}"
+            f"✅ QA Strategy v2.6 已启动 | mode={mode} | "
+            f"bL={buy_lv}/sL={sell_lv} | "
+            f"universe={self.universe.mode} n={len(bootstrap)} | {self.store.summary_line()}"
         )
 
     def get_history(self, code: str) -> Optional[pd.DataFrame]:
-        full_code = f"US.{code}" if not code.startswith("US.") else code
+        u_cfg = self.config.get("universe") if isinstance(self.config.get("universe"), dict) else {}
+        default_mkt = str(u_cfg.get("default_market") or "US") # type: ignore
+        full_code = to_full_code(code, default_market=default_mkt)
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
@@ -71,11 +85,11 @@ class MoomooStrategyRunner:
             max_count=int(self.config.get("max_count", 300)),
         )
         if ret != RET_OK or data is None:
-            print(f"❌ {code} K线获取失败: ret={ret}, data={data}")
+            self.monitor.log_event(f"❌ {code} K线获取失败: ret={ret}, data={data}")
             return None
 
         if isinstance(data, (list, pd.DataFrame, tuple)) and len(data) == 0:
-            print(f"❌ {code} K线获取失败: 数据为空")
+            self.monitor.log_event(f"❌ {code} K线获取失败: 数据为空")
             return None
 
         if isinstance(data, pd.DataFrame):
@@ -83,7 +97,9 @@ class MoomooStrategyRunner:
         else:
             df = pd.DataFrame(data)  # type: ignore[arg-type]
 
-        print(f"✅ {code} 获取 {len(df)} 条K线")
+        # 成功拉K：仅 detail 模式打控制台，避免 30s 刷屏
+        if getattr(self.monitor, "console_mode", "signal") in ("detail", "all"):
+            print(f"[{datetime.now()}] ✅ {code} 获取 {len(df)} 条K线")
         return df
 
     def _current_atr(self, df: pd.DataFrame) -> Optional[float]:
@@ -101,18 +117,21 @@ class MoomooStrategyRunner:
     def _execute_buy(self, code: str, shares: int, price: float, reason: str) -> bool:
         order = self.executor.place_order(code, shares, side="BUY", price=price)
         if not order.get("ok"):
-            self.monitor.send_telegram(
-                f"⚠️ 买入失败 {code} | {order.get('message', 'unknown')}"
-            )
+            msg = f"⚠️ 买入失败 {code} | {order.get('message', 'unknown')}"
+            self.monitor.log_event(msg)
+            self.monitor.send_telegram(msg)
             return False
         fill = float(order.get("price") or price)
         if not self.store.open_long(code, shares, fill):
-            self.monitor.log(f"{code} 账本开仓失败（现金不足? cash={self.store.cash:.2f}）")
+            self.monitor.log_event(
+                f"{code} 账本开仓失败（现金不足? cash={self.store.cash:.2f}）"
+            )
             return False
         msg = (
             f"🟢 买入 {code} | {shares}股 @ {fill:.2f} | "
             f"原因: {reason} | {self.store.summary_line()}"
         )
+        self.monitor.log_event(msg)
         self.monitor.send_telegram(msg)
         self.risk.log_risk(msg)
         return True
@@ -131,9 +150,9 @@ class MoomooStrategyRunner:
             return False
         order = self.executor.place_order(code, qty, side="SELL", price=price)
         if not order.get("ok"):
-            self.monitor.send_telegram(
-                f"⚠️ 卖出失败 {code} | {order.get('message', 'unknown')}"
-            )
+            msg = f"⚠️ 卖出失败 {code} | {order.get('message', 'unknown')}"
+            self.monitor.log_event(msg)
+            self.monitor.send_telegram(msg)
             return False
         fill = float(order.get("price") or price)
         entry = self.store.entry_price(code)
@@ -145,9 +164,36 @@ class MoomooStrategyRunner:
             f"🔴 卖出 {code} | {qty}股 @ {fill:.2f} | 原因: {reason} | "
             f"PnL: {pnl:+.2f} ({pnl_pct:+.2f}%) | {self.store.summary_line()}"
         )
+        self.monitor.log_event(msg)
         self.monitor.send_telegram(msg)
         self.risk.log_risk(msg)
         return True
+
+    def _risk_levels(
+        self, df: pd.DataFrame, current_price: float, held: int, entry: float
+    ):
+        """ATR / 止损 / 追踪 / 止盈价，供 DETAIL 日志。"""
+        atr = self._current_atr(df)
+        stop_entry = None
+        trail_stop = None
+        tp_px = None
+        unreal_pct = None
+        if atr is not None and entry > 0:
+            stop_entry = self.risk.stop_loss_price(entry, atr)
+        if held > 0 and atr is not None and len(df) >= int(self.config.get("highest_window", 60)):
+            recent_high = df["high"].iloc[-int(self.config.get("highest_window", 60)) :].max()
+            trail_stop = float(recent_high) - float(self.config.get("atr_mult", 2.0)) * atr
+        if entry > 0:
+            tp_ratio = float(self.config.get("take_profit_ratio", 0.12))
+            tp_px = entry * (1.0 + tp_ratio)
+            unreal_pct = (current_price - entry) / entry * 100.0
+        ma200 = None
+        if len(df) >= 200:
+            try:
+                ma200 = float(df["close"].rolling(window=200).mean().iloc[-1])
+            except (TypeError, ValueError):
+                ma200 = None
+        return atr, stop_entry, trail_stop, tp_px, unreal_pct, ma200
 
     def _handle_exits(
         self,
@@ -155,10 +201,11 @@ class MoomooStrategyRunner:
         df: pd.DataFrame,
         current_price: float,
         signal_str: str,
+        signal_detail: str = "",
     ) -> bool:
         """
         处理持仓退出。返回 True 表示本轮已发生卖出（可跳过开仓）。
-        优先级: ATR入场止损 > 止盈 > ATR追踪止损 > 四要素卖出
+        优先级: ATR入场止损 > 止盈 > ATR追踪止损 > 信号卖出
         """
         held = self.store.shares(code)
         if held <= 0:
@@ -198,38 +245,58 @@ class MoomooStrategyRunner:
         if atr_trail == "atr_trailing_sell":
             return self._execute_sell(code, held, current_price, "ATR追踪止损")
 
-        # 4) 四要素卖出
+        # 4) 信号卖出（死叉档位）
         if signal_str == "sell":
-            return self._execute_sell(code, held, current_price, "四要素卖出")
+            reason = f"信号卖出({signal_detail})" if signal_detail else "信号卖出"
+            return self._execute_sell(code, held, current_price, reason)
 
         return False
 
     def run_cycle(self):
-        for code in self.config["symbols"]:
+        symbols = self.universe.get_symbols(held_codes=self.store.held_codes())
+        for code in symbols:
+            self.store.ensure_symbol(code)
             df = self.get_history(code)
             if df is None or len(df) < 200:
                 continue
 
             current_price = float(df["close"].iloc[-1])
             held = self.store.shares(code)
+            entry = self.store.entry_price(code)
 
-            # 有持仓时始终检查退出（不因 MA 保护而跳过止损/止盈）
-            signal_str = get_signal(df, current_price, 0, self.config)
+            signal_str, signal_detail, factors = evaluate_signal(
+                df, current_price, 0, self.config
+            )
             atr_signal = generate_atr_trailing_stop_signal(
                 df, current_price, held, self.config
             )
+            atr, stop_entry, trail_stop, tp_px, unreal_pct, ma200 = self._risk_levels(
+                df, current_price, held, entry
+            )
+
+            action = "hold"
+            reason = signal_detail or ""
 
             sold = False
             if held > 0:
-                sold = self._handle_exits(code, df, current_price, signal_str)
+                sold = self._handle_exits(
+                    code, df, current_price, signal_str, signal_detail
+                )
+                if sold:
+                    action = "sell"
+                    reason = signal_detail or "exit"
                 held = self.store.shares(code)
+                entry = self.store.entry_price(code)
 
             # 新开仓：MA 门禁
             ma_ok, ma_msg = self.risk.check_ma_protection(df, current_price)
-            if not ma_ok:
-                self.monitor.log(f"{code} {ma_msg} | 持仓: {held}")
-                if held == 0:
-                    continue
+            if not ma_ok and held == 0 and signal_str == "buy":
+                action = "block_ma"
+                reason = ma_msg
+                self.monitor.log_event(f"{code} {ma_msg} | 买信号被MA门禁拦截")
+            elif not ma_ok and held == 0:
+                # 无信号时不刷 event，只进 detail
+                pass
 
             if (
                 not sold
@@ -237,7 +304,12 @@ class MoomooStrategyRunner:
                 and held == 0
                 and ma_ok
             ):
-                strength = int(self.config.get("signal_level", 2))
+                strength = int(
+                    self.config.get(
+                        "position_level",
+                        self.config.get("signal_level", 2),
+                    )
+                )
                 shares = self.risk.calculate_position_size(
                     self.store.cash, current_price, strength
                 )
@@ -245,18 +317,67 @@ class MoomooStrategyRunner:
                 if shares <= 0 and self.store.cash >= current_price * fallback:
                     shares = fallback
                 if shares <= 0:
-                    self.monitor.log(
-                        f"{code} 买信号但仓位为 0（现金不足 cash={self.store.cash:.2f}）"
+                    action = "block_cash"
+                    reason = f"现金不足 cash={self.store.cash:.2f}"
+                    self.monitor.log_event(
+                        f"{code} 买信号但仓位为 0（{reason}）"
                     )
                 else:
-                    self._execute_buy(code, shares, current_price, "四要素买入")
+                    ok = self._execute_buy(
+                        code,
+                        shares,
+                        current_price,
+                        f"信号买入({signal_detail})",
+                    )
+                    if ok:
+                        action = "buy"
+                        reason = signal_detail
 
             held = self.store.shares(code)
             entry = self.store.entry_price(code)
             entry_info = f" 入场:{entry:.2f}" if held > 0 and entry > 0 else ""
-            self.monitor.log(
-                f"{code} | 价: {current_price:.2f} | 信号: {signal_str} | "
-                f"ATR: {atr_signal} | 持仓: {held}{entry_info} | 现金: {self.store.cash:.2f}"
+
+            # 控制台精简一行（signal 模式）
+            console_line = (
+                f"{code} | 价: {current_price:.2f} | 信号: {signal_str} "
+                f"[{signal_detail}] | ATR: {atr_signal} | "
+                f"持仓: {held}{entry_info} | 现金: {self.store.cash:.2f}"
+            )
+            show_console = (
+                self.monitor.console_mode in ("detail", "all")
+                or signal_str in ("buy", "sell")
+                or action in ("buy", "sell", "block_ma", "block_cash")
+            )
+            if show_console and self.monitor.console_mode != "quiet":
+                # 仅打印，不重复写「每轮全量」到文件（detail 另写）
+                print(f"[{datetime.now()}] {console_line}")
+
+            # 因子 DETAIL：默认每天每票一次；成交/拦截 force 再写一条
+            force_detail = action in ("buy", "sell", "block_ma", "block_cash")
+            snap = self.monitor.format_factor_snapshot(
+                code,
+                current_price,
+                held,
+                entry,
+                self.store.cash,
+                factors or {},
+                ma200=ma200,
+                ma_gate=ma_ok,
+                ma_msg=ma_msg if not ma_ok else "",
+                atr=atr,
+                stop_entry=stop_entry,
+                trail_stop=trail_stop,
+                tp_px=tp_px,
+                atr_trail=str(atr_signal),
+                unreal_pct=unreal_pct,
+                action=action,
+                reason=reason,
+            )
+            self.monitor.log_detail(
+                code,
+                snap,
+                force=force_detail,
+                is_none_signal=(signal_str == "none" and action == "hold"),
             )
 
     def close(self):
@@ -270,6 +391,10 @@ class MoomooStrategyRunner:
             self.executor.close()
         except Exception as e:
             print(f"关闭 Executor 失败: {e}")
+        try:
+            self.universe.close()
+        except Exception as e:
+            print(f"关闭 Universe 失败: {e}")
         try:
             self.quote_ctx.close()
         except Exception as e:
@@ -291,8 +416,11 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, GracefulStop):
         print("策略停止中...")
         if runner:
+            runner.monitor.log_event(
+                f"策略停止 | {runner.store.summary_line()}"
+            )
             runner.monitor.send_telegram(
-                f"🛑 QA Strategy v2.5 已停止 | {runner.store.summary_line()}"
+                f"🛑 QA Strategy v2.6 已停止 | {runner.store.summary_line()}"
             )
     finally:
         if runner:
