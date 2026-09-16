@@ -120,7 +120,7 @@ class MoomooStrategyRunner:
                         st["buy_time"] = datetime.now().strftime("%Y-%m-%d")
                     st["vol"] = old + qty
                     st["buy_count"] = int(st.get("buy_count") or 0) + 1
-                    self.monitor.send_telegram(
+                    self.monitor.notify(
                         f"🟢 {code} 买入 {qty} @ {price:.2f} {reason}"
                     )
 
@@ -137,7 +137,7 @@ class MoomooStrategyRunner:
                         st["half_sold"] = True
                     if st["vol"] <= 0:
                         self.positions[code] = empty_pos_state()
-                    self.monitor.send_telegram(
+                    self.monitor.notify(
                         f"🔴 {code} 卖出 {sell_vol} @ {price:.2f} {reason}"
                     )
 
