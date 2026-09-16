@@ -1,13 +1,14 @@
-# runner_v2.6.py
+# runner_v2.7.py
 # moomoo 壳 + 国金 QMT Macd_V1 买卖规则
 # Paper 默认。持仓状态写入 positions.json。
-# 股票池 = config.symbols + OpenD 自选分组（默认 AI / 太空）
+# 默认 run_schedule=close：等美股常规收盘后跑一轮并退出。
 
 from moomoo import *
 import json
 import os
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yaml
@@ -52,16 +53,61 @@ def _unique(seq):
     return out
 
 
-class MoomooStrategyRunner:
-    def __init__(self, config_path="config.yaml"):
-        with open(config_path, encoding="utf-8") as f:
-            self.config = yaml.safe_load(f) or {}
-        local_path = "config.local.yaml"
-        if os.path.isfile(local_path):
-            with open(local_path, encoding="utf-8") as f:
-                local = yaml.safe_load(f) or {}
-            self.config.update(local)
+def load_merged_config(config_path="config.yaml"):
+    with open(config_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+    if os.path.isfile("config.local.yaml"):
+        with open("config.local.yaml", encoding="utf-8") as f:
+            config.update(yaml.safe_load(f) or {})
+    return config
 
+
+def next_us_close_at(config):
+    tz = ZoneInfo(str(config.get("close_timezone") or "America/New_York"))
+    raw = str(config.get("close_time") or "16:15")
+    hh, mm = [int(x) for x in raw.split(":")[:2]]
+    now = datetime.now(tz)
+    today_close = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    def weekday_close_on(day):
+        return datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz)
+
+    if now.weekday() < 5 and now < today_close:
+        return today_close
+
+    day = now.date() + timedelta(days=1)
+    while True:
+        cand = weekday_close_on(day)
+        if cand.weekday() < 5:
+            return cand
+        day += timedelta(days=1)
+
+
+def wait_for_close_if_needed(config):
+    if str(config.get("run_schedule") or "loop").lower() != "close":
+        return
+    target = next_us_close_at(config)
+    tz = target.tzinfo
+    now = datetime.now(tz)
+    left = (target - now).total_seconds()
+    if left <= 0:
+        print(f"[{datetime.now()}] 已过美股收盘检查点，立即执行")
+        return
+    print(
+        f"[{datetime.now()}] 等待美股常规收盘后执行: {target.isoformat()} "
+        f"（约 {left / 3600:.1f} 小时）"
+    )
+    while True:
+        left = (target - datetime.now(tz)).total_seconds()
+        if left <= 0:
+            break
+        time.sleep(min(left, 60))
+    print(f"[{datetime.now()}] 到达收盘检查点，开始本轮")
+
+
+class MoomooStrategyRunner:
+    def __init__(self, config=None, config_path="config.yaml"):
+        self.config = config or load_merged_config(config_path)
         self.quote_ctx = OpenQuoteContext()
         self.monitor = Monitor(self.config)
         self.risk = RiskManager(self.config)
@@ -71,7 +117,7 @@ class MoomooStrategyRunner:
         self.universe = list(self._static_symbols())
         self._watchlist_synced_at = 0.0
         self.refresh_watchlist(force=True)
-        print(f"[{datetime.now()}] === moomoo + QMT规则 v2.6 启动 ===")
+        print(f"[{datetime.now()}] === moomoo + QMT规则 v2.7 启动 ===")
         print(f"[{datetime.now()}] 股票池 {len(self._active_codes())} 只: {', '.join(self._active_codes())}")
 
     def _static_symbols(self):
@@ -225,7 +271,7 @@ class MoomooStrategyRunner:
         return max(qty, 1) if amount > 0 else 0
 
     def run_cycle(self):
-        self.refresh_watchlist(force=False)
+        self.refresh_watchlist(force=True)
         for code in self._active_codes():
             df = self.get_history(code)
             if df is None or len(df) < 60:
@@ -291,12 +337,20 @@ class MoomooStrategyRunner:
 
 
 if __name__ == "__main__":
-    runner = MoomooStrategyRunner()
+    cfg = load_merged_config()
+    runner = None
     try:
-        while True:
-            runner.run_cycle()
-            time.sleep(int(runner.config.get("sleep_seconds", 30)))
+        wait_for_close_if_needed(cfg)
+        runner = MoomooStrategyRunner(config=cfg)
+        runner.run_cycle()
+        if str(cfg.get("run_schedule") or "loop").lower() == "loop":
+            while True:
+                time.sleep(int(cfg.get("sleep_seconds", 1800)))
+                runner.run_cycle()
+        else:
+            print(f"[{datetime.now()}] close 模式本轮完成，退出")
     except KeyboardInterrupt:
         print("策略停止")
     finally:
-        runner.close()
+        if runner is not None:
+            runner.close()
