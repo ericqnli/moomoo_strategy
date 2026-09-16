@@ -11,7 +11,7 @@ cd ~/moomoo_strategy
 git pull
 cp config.local.yaml.example config.local.yaml
 # 填 wecom_webhook_url
-python runner_v2.4.py
+python runner.py
 ```
 
 需要本机已启动 moomoo OpenD。
