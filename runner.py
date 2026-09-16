@@ -1,6 +1,7 @@
-# runner_v2.5.py
+# runner_v2.6.py
 # moomoo 壳 + 国金 QMT Macd_V1 买卖规则
 # Paper 默认。持仓状态写入 positions.json。
+# 股票池 = config.symbols + OpenD 自选分组（默认 AI / 太空）
 
 from moomoo import *
 import json
@@ -18,10 +19,37 @@ from strategy_core import decide, empty_pos_state
 
 
 POS_FILE = "positions.json"
+WATCHLIST_CACHE = "watchlist_cache.json"
+MARKET_PREFIXES = ("US", "HK", "SH", "SZ")
 
 
 def _full_code(code):
-    return code if "." in code and code.split(".", 1)[0] in ("US", "HK", "SH", "SZ") else f"US.{code}"
+    return code if "." in code and code.split(".", 1)[0] in MARKET_PREFIXES else f"US.{code}"
+
+
+def _market_of(code):
+    full = _full_code(code)
+    return full.split(".", 1)[0]
+
+
+def _pool_code(code):
+    """统一成池内代码：美股去掉 US. 前缀，与 config.yaml 一致。"""
+    raw = str(code).strip()
+    if not raw:
+        return ""
+    if raw.startswith("US."):
+        return raw[3:]
+    return raw
+
+
+def _unique(seq):
+    seen = set()
+    out = []
+    for item in seq:
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 class MoomooStrategyRunner:
@@ -39,7 +67,28 @@ class MoomooStrategyRunner:
         self.risk = RiskManager(self.config)
         self.executor = Executor(self.config)
         self.positions = self._load_positions()
-        print(f"[{datetime.now()}] === moomoo + QMT规则 v2.5 启动 ===")
+        self.watchlist_symbols = []
+        self.universe = list(self._static_symbols())
+        self._watchlist_synced_at = 0.0
+        self.refresh_watchlist(force=True)
+        print(f"[{datetime.now()}] === moomoo + QMT规则 v2.6 启动 ===")
+        print(f"[{datetime.now()}] 股票池 {len(self._active_codes())} 只: {', '.join(self._active_codes())}")
+
+    def _static_symbols(self):
+        return _unique(_pool_code(c) for c in (self.config.get("symbols") or []))
+
+    def _watchlist_groups(self):
+        groups = self.config.get("watchlist_groups") or []
+        return [str(g).strip() for g in groups if str(g).strip()]
+
+    def _allowed_markets(self):
+        raw = self.config.get("watchlist_markets")
+        if not raw:
+            return set()
+        return {str(m).upper().strip() for m in raw if str(m).strip()}
+
+    def _refresh_seconds(self):
+        return max(60, int(self.config.get("watchlist_refresh_seconds", 900)))
 
     def _load_positions(self):
         data = {}
@@ -49,7 +98,7 @@ class MoomooStrategyRunner:
                     data = json.load(f)
             except Exception as e:
                 print(f"读取 {POS_FILE} 失败: {e}")
-        for code in self.config.get("symbols", []):
+        for code in self._static_symbols():
             if code not in data:
                 data[code] = empty_pos_state()
         return data
@@ -57,6 +106,98 @@ class MoomooStrategyRunner:
     def _save_positions(self):
         with open(POS_FILE, "w", encoding="utf-8") as f:
             json.dump(self.positions, f, ensure_ascii=False, indent=2)
+
+    def _load_watchlist_cache(self):
+        if not os.path.isfile(WATCHLIST_CACHE):
+            return []
+        try:
+            with open(WATCHLIST_CACHE, encoding="utf-8") as f:
+                payload = json.load(f) or {}
+            return [_pool_code(c) for c in (payload.get("watchlist") or [])]
+        except Exception as e:
+            print(f"读取 {WATCHLIST_CACHE} 失败: {e}")
+            return []
+
+    def _save_watchlist_cache(self, codes):
+        payload = {
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "groups": self._watchlist_groups(),
+            "watchlist": codes,
+        }
+        try:
+            with open(WATCHLIST_CACHE, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"写入 {WATCHLIST_CACHE} 失败: {e}")
+
+    def _fetch_group_codes(self, group_name):
+        ret, data = self.quote_ctx.get_user_security(group_name)
+        if ret != RET_OK or data is None:
+            raise RuntimeError(f"{group_name}: {data}")
+        if getattr(data, "empty", True) or "code" not in getattr(data, "columns", []):
+            print(f"⚠️ 自选分组空或不存在: {group_name}")
+            return []
+        allowed = self._allowed_markets()
+        out = []
+        for raw in data["code"].tolist():
+            code = _pool_code(raw)
+            if not code:
+                continue
+            if allowed and _market_of(raw) not in allowed:
+                continue
+            out.append(code)
+        return out
+
+    def refresh_watchlist(self, force=False):
+        groups = self._watchlist_groups()
+        now = time.time()
+        if not force and (now - self._watchlist_synced_at) < self._refresh_seconds():
+            return False
+        if not groups:
+            self.watchlist_symbols = []
+            self.universe = list(self._static_symbols())
+            self._watchlist_synced_at = now
+            return True
+
+        fetched = []
+        errors = []
+        for group in groups:
+            try:
+                codes = self._fetch_group_codes(group)
+                fetched.extend(codes)
+                print(f"[{datetime.now()}] 自选[{group}] {len(codes)} 只")
+            except Exception as e:
+                errors.append(f"{group}: {e}")
+                print(f"❌ 拉取自选分组失败 {group}: {e}")
+
+        if errors and not fetched:
+            cached = self._load_watchlist_cache()
+            self.watchlist_symbols = _unique(cached)
+            source = "缓存"
+        else:
+            self.watchlist_symbols = _unique(fetched)
+            self._save_watchlist_cache(self.watchlist_symbols)
+            source = "OpenD" if not errors else "OpenD(部分失败)+\u5df2拉到的"
+
+        merged = _unique(self._static_symbols() + self.watchlist_symbols)
+        if merged != self.universe:
+            print(
+                f"[{datetime.now()}] 股票池更新({source}): "
+                f"{len(self.universe)} -> {len(merged)}"
+            )
+        self.universe = merged
+        for code in self.universe:
+            self.positions.setdefault(code, empty_pos_state())
+        self._watchlist_synced_at = now
+        return True
+
+    def _active_codes(self):
+        codes = list(self.universe)
+        extra = []
+        for code, st in self.positions.items():
+            if float((st or {}).get("vol") or 0) > 0 and code not in codes:
+                extra.append(code)
+        return codes + extra
 
     def get_history(self, code):
         full_code = _full_code(code)
@@ -84,7 +225,8 @@ class MoomooStrategyRunner:
         return max(qty, 1) if amount > 0 else 0
 
     def run_cycle(self):
-        for code in self.config.get("symbols", []):
+        self.refresh_watchlist(force=False)
+        for code in self._active_codes():
             df = self.get_history(code)
             if df is None or len(df) < 60:
                 continue
