@@ -26,3 +26,5 @@ old_versions/
 
 # Secrets
 config.local.yaml
+.env
+.env
