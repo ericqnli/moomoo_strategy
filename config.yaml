@@ -22,7 +22,8 @@ watchlist_refresh_seconds: 900
 ktype: K_DAY
 history_days: 400
 max_count: 300
-sleep_seconds: 30
+# 日线轮询间隔；30 分钟足够，不用 30 秒
+sleep_seconds: 1800
 
 macd_fast: 12
 macd_slow: 26
