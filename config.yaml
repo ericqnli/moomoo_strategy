@@ -25,7 +25,7 @@ max_count: 300
 
 # close = 等美股常规收盘后跑一轮并退出
 # loop  = 按 sleep_seconds 循环（旧行为）
-run_schedule: close
+run_schedule: loop  
 close_timezone: America/New_York
 close_time: "16:15"
 sleep_seconds: 1800
