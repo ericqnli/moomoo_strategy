@@ -1,30 +1,66 @@
-# moomoo_strategy config v2.4
+# moomoo_strategy config v2.5
+# 买卖规则对齐国金 QMT Macd_V1（默认开关与 QMT 一致）
+
 symbols:
   - BRK.B
   - SPY
   - QQQ
 
-# 数据设置
 ktype: K_DAY
-history_days: 200
+history_days: 400
 max_count: 300
+sleep_seconds: 30
 
-# 信号参数
-rsi_max_for_buy: 46
-rsi_min_for_sell: 68
+# MACD
+macd_fast: 12
+macd_slow: 26
+macd_signal: 9
+
+# RSI / KDJ / ADX
+rsi_period: 6
+rsi_oversold: 35
+kdj_n: 9
+kdj_m1: 3
+kdj_m2: 3
+kdj_k_oversold: 30
+kdj_j_oversold: 20
+adx_period: 14
+adx_trend: 25
+adx_range: 20
+regime_mode: auto   # auto / kdj / rsi / both
+
+# 成交量（QMT 默认关）
+use_volume_filter: false
+volume_mult: 1.2
+volume_ma_period: 20
+
+# 止损止盈（QMT 默认关）
+use_stop_loss: false
+use_take_profit: false
+use_trailing: false
+use_time_stop: false
+stop_mode: pct      # pct / atr
+stop_loss_pct: 0.08
+take_profit_pct: 0.18
 atr_period: 14
-atr_mult: 3.0
-volume_mult: 0.5
+stop_atr_mult: 2.0
+take_atr_mult: 3.5
+trail_pct: 0.08
+max_hold_days: 30
 
-volume_confirm_mult_buy: 0.8
-volume_confirm_mult_sell: 1.5
+# 顶背离 / 死叉
+div_lookback: 30
+div_peak_order: 3
+death_cross_sell_ratio: 0.5
 
 # 仓位
+enable_repeat_buy: true
+max_buy_count: 3
+buy_amount: 5000
 max_position_pct: 0.35
-initial_shares: 50
-
-# Telegram 配置（在这里填你的信息）
-telegram_bot_token: "8992336441:AAHuVCImG322V3p_jVaxh6Y0se51VXs1jcs" 
-telegram_chat_id: " -5585097609"       
 
 trade_mode: paper
+
+# Telegram 放到 config.local.yaml，不要提交仓库
+telegram_bot_token: ""
+telegram_chat_id: ""
