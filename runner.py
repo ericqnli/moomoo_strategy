@@ -177,7 +177,7 @@ class MoomooStrategyRunner:
         else:
             self.watchlist_symbols = _unique(fetched)
             self._save_watchlist_cache(self.watchlist_symbols)
-            source = "OpenD" if not errors else "OpenD(部分失败)+\u5df2拉到的"
+            source = "OpenD" if not errors else "OpenD部分失败"
 
         merged = _unique(self._static_symbols() + self.watchlist_symbols)
         if merged != self.universe:
