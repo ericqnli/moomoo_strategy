@@ -53,6 +53,15 @@ def _unique(seq):
     return out
 
 
+def _fmt(v, digits=2):
+    try:
+        if v is None:
+            return "-"
+        return f"{float(v):.{digits}f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
 def load_merged_config(config_path="config.yaml"):
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
@@ -270,11 +279,49 @@ class MoomooStrategyRunner:
         qty = int(amount / price)
         return max(qty, 1) if amount > 0 else 0
 
+    def _close_report(self, stats):
+        mode = str(self.config.get("trade_mode") or "paper")
+        tz = ZoneInfo(str(self.config.get("close_timezone") or "America/New_York"))
+        session = datetime.now(tz).strftime("%Y-%m-%d")
+        lines = [
+            f"收盘日线 {session}",
+            f"模式 {mode} | 池 {stats['pool']} 只 | 买 {len(stats['buys'])} | 卖 {len(stats['sells'])} | 无信号 {stats['none']} | 失败 {stats['fail']}",
+        ]
+        if stats["buys"]:
+            lines.append("买入")
+            lines.extend(stats["buys"])
+        if stats["sells"]:
+            lines.append("卖出")
+            lines.extend(stats["sells"])
+        holds = []
+        for code, st in self.positions.items():
+            vol = float((st or {}).get("vol") or 0)
+            if vol <= 0:
+                continue
+            holds.append(
+                f"{code} {int(vol)}股 成本{_fmt(st.get('buy_price'))}"
+            )
+        if holds:
+            lines.append("持仓 " + "；".join(holds))
+        else:
+            lines.append("持仓 无")
+        if not stats["buys"] and not stats["sells"]:
+            lines.append("本轮无交易")
+        return "\n".join(lines)
+
+    def _send_close_report(self, stats):
+        if self.config.get("enable_close_report", True) is False:
+            return
+        self.monitor.notify(self._close_report(stats))
+
     def run_cycle(self):
         self.refresh_watchlist(force=True)
-        for code in self._active_codes():
+        codes = self._active_codes()
+        stats = {"pool": len(codes), "buys": [], "sells": [], "none": 0, "fail": 0}
+        for code in codes:
             df = self.get_history(code)
             if df is None or len(df) < 60:
+                stats["fail"] += 1
                 continue
 
             st = self.positions.setdefault(code, empty_pos_state())
@@ -292,6 +339,7 @@ class MoomooStrategyRunner:
             if action == "buy":
                 qty = self._buy_qty(price)
                 if qty <= 0:
+                    stats["none"] += 1
                     continue
                 ok = self.executor.place_order(code, qty, side="BUY")
                 if ok:
@@ -308,14 +356,18 @@ class MoomooStrategyRunner:
                         st["buy_time"] = datetime.now().strftime("%Y-%m-%d")
                     st["vol"] = old + qty
                     st["buy_count"] = int(st.get("buy_count") or 0) + 1
+                    stats["buys"].append(f"{code} {qty}股 @{_fmt(price)} {reason}")
                     self.monitor.notify(
                         f"🟢 {code} 买入 {qty} @ {price:.2f} {reason}"
                     )
+                else:
+                    stats["fail"] += 1
 
             elif action == "sell" and float(st.get("vol") or 0) > 0:
                 sell_vol = int(float(st["vol"]) * float(result.get("ratio") or 1.0))
                 sell_vol = max(sell_vol, 1) if result.get("ratio", 0) >= 1 else sell_vol
                 if sell_vol <= 0:
+                    stats["none"] += 1
                     continue
                 sell_vol = min(sell_vol, int(st["vol"]))
                 ok = self.executor.place_order(code, sell_vol, side="SELL")
@@ -325,11 +377,18 @@ class MoomooStrategyRunner:
                         st["half_sold"] = True
                     if st["vol"] <= 0:
                         self.positions[code] = empty_pos_state()
+                    stats["sells"].append(f"{code} {sell_vol}股 @{_fmt(price)} {reason}")
                     self.monitor.notify(
                         f"🔴 {code} 卖出 {sell_vol} @ {price:.2f} {reason}"
                     )
+                else:
+                    stats["fail"] += 1
+            else:
+                stats["none"] += 1
 
             self._save_positions()
+
+        self._send_close_report(stats)
 
     def close(self):
         self.executor.close()
