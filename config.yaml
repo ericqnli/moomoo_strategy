@@ -1,10 +1,23 @@
-# moomoo_strategy config v2.5
+# moomoo_strategy config v2.6
 # 买卖规则对齐国金 QMT Macd_V1（默认开关与 QMT 一致）
 
+# 固定标的，与自选分组合并去重；不要把 OpenD 拉到的名单写回这里
 symbols:
   - BRK.B
   - SPY
   - QQQ
+
+# moomoo 自选自定义分组（名字须与 App 里一致）
+watchlist_groups:
+  - AI
+  - 太空
+
+# 只收这些市场；空列表表示不按市场过滤
+watchlist_markets:
+  - US
+
+# 自选同步周期（秒）。启动先拉一次，之后按此间隔刷新
+watchlist_refresh_seconds: 900
 
 ktype: K_DAY
 history_days: 400
