@@ -15,6 +15,7 @@ logs/
 *.gz
 moomoo_strategy_latest.tar.gz
 positions.json
+watchlist_cache.json
 
 # Old versions
 old_versions/
@@ -26,5 +27,4 @@ old_versions/
 
 # Secrets
 config.local.yaml
-.env
 .env
