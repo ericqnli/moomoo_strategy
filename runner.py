@@ -6,6 +6,7 @@
 from moomoo import *
 import json
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -410,6 +411,7 @@ if __name__ == "__main__":
             print(f"[{datetime.now()}] close 模式本轮完成，退出")
     except KeyboardInterrupt:
         print("策略停止")
+        sys.exit(130)
     finally:
         if runner is not None:
             runner.close()
