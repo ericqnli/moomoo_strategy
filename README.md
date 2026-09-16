@@ -22,6 +22,11 @@ python runner.py
 - 收盘后才启动：立刻跑一轮就退
 - 改回循环：`run_schedule: loop`，间隔用 `sleep_seconds`
 
+## 通知
+- `paper` / `live` 都发企业微信
+- 收盘每轮一定发汇总（无交易也发）；有买卖再单发一条
+- webhook 写在 `config.local.yaml` 的 `wecom_webhook_url`
+
 ## 股票池
 - 固定：`config.yaml` 的 `symbols`（默认 BRK.B / SPY / QQQ）
 - 自选：OpenD 拉 `watchlist_groups`（默认 `AI`、`太空`），按 `watchlist_markets` 过滤美股
