@@ -1,3 +1,7 @@
 # 复制为 config.local.yaml 后填写，该文件已被 gitignore
-telegram_bot_token: "YOUR_BOT_TOKEN"
-telegram_chat_id: "YOUR_CHAT_ID"
+wecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
+
+# Telegram 仅备份，不要打开
+enable_telegram: false
+telegram_bot_token: ""
+telegram_chat_id: ""

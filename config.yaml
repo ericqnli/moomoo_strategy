@@ -11,12 +11,10 @@ history_days: 400
 max_count: 300
 sleep_seconds: 30
 
-# MACD
 macd_fast: 12
 macd_slow: 26
 macd_signal: 9
 
-# RSI / KDJ / ADX
 rsi_period: 6
 rsi_oversold: 35
 kdj_n: 9
@@ -27,19 +25,17 @@ kdj_j_oversold: 20
 adx_period: 14
 adx_trend: 25
 adx_range: 20
-regime_mode: auto   # auto / kdj / rsi / both
+regime_mode: auto
 
-# 成交量（QMT 默认关）
 use_volume_filter: false
 volume_mult: 1.2
 volume_ma_period: 20
 
-# 止损止盈（QMT 默认关）
 use_stop_loss: false
 use_take_profit: false
 use_trailing: false
 use_time_stop: false
-stop_mode: pct      # pct / atr
+stop_mode: pct
 stop_loss_pct: 0.08
 take_profit_pct: 0.18
 atr_period: 14
@@ -48,12 +44,10 @@ take_atr_mult: 3.5
 trail_pct: 0.08
 max_hold_days: 30
 
-# 顶背离 / 死叉
 div_lookback: 30
 div_peak_order: 3
 death_cross_sell_ratio: 0.5
 
-# 仓位
 enable_repeat_buy: true
 max_buy_count: 3
 buy_amount: 5000
@@ -61,6 +55,9 @@ max_position_pct: 0.35
 
 trade_mode: paper
 
-# Telegram 放到 config.local.yaml，不要提交仓库
+# 通知：企业微信为主，Telegram 默认关
+# webhook 放 config.local.yaml
+enable_telegram: false
+wecom_webhook_url: ""
 telegram_bot_token: ""
 telegram_chat_id: ""
