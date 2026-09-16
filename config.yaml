@@ -1,4 +1,4 @@
-# moomoo_strategy config v2.6
+# moomoo_strategy config v2.7
 # 买卖规则对齐国金 QMT Macd_V1（默认开关与 QMT 一致）
 
 # 固定标的，与自选分组合并去重；不要把 OpenD 拉到的名单写回这里
@@ -16,13 +16,18 @@ watchlist_groups:
 watchlist_markets:
   - US
 
-# 自选同步周期（秒）。启动先拉一次，之后按此间隔刷新
+# 自选同步周期（秒）。close 模式下只在当轮执行时拉一次
 watchlist_refresh_seconds: 900
 
 ktype: K_DAY
 history_days: 400
 max_count: 300
-# 日线轮询间隔；30 分钟足够，不用 30 秒
+
+# close = 等美股常规收盘后跑一轮并退出
+# loop  = 按 sleep_seconds 循环（旧行为）
+run_schedule: close
+close_timezone: America/New_York
+close_time: "16:15"
 sleep_seconds: 1800
 
 macd_fast: 12
