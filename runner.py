@@ -313,7 +313,7 @@ class MoomooStrategyRunner:
 
     def _close_report(self, stats):
         mode = str(self.config.get("trade_mode") or "paper")
-        tz = ZoneInfo(str(config.get("close_timezone") or "America/New_York"))
+        tz = ZoneInfo(str(self.config.get("close_timezone") or "America/New_York"))
         session = datetime.now(tz).strftime("%Y-%m-%d")
         lines = [
             f"收盘日线 {session}",
