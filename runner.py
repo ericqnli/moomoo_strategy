@@ -63,6 +63,34 @@ def _fmt(v, digits=2):
         return "-"
 
 
+def _iint(v):
+    try:
+        if v is None:
+            return "-"
+        return str(int(round(float(v))))
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _signed(v):
+    try:
+        if v is None:
+            return "-"
+        return f"{float(v):+.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _indicator_line(extra, vol):
+    hist_s = f"{_signed(extra.get('prev_hist'))}→{_signed(extra.get('hist'))}"
+    dif_s = f"{_signed(extra.get('prev_dif'))}→{_signed(extra.get('dif'))}"
+    return (
+        f"ADX={_iint(extra.get('adx'))} RSI={_iint(extra.get('rsi'))} "
+        f"KDJ={_iint(extra.get('k'))}/{_iint(extra.get('d'))}/{_iint(extra.get('j'))} "
+        f"柱{hist_s} DIF{dif_s} 仓={vol}"
+    )
+
+
 def load_merged_config(config_path="config.yaml"):
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
@@ -285,7 +313,7 @@ class MoomooStrategyRunner:
 
     def _close_report(self, stats):
         mode = str(self.config.get("trade_mode") or "paper")
-        tz = ZoneInfo(str(self.config.get("close_timezone") or "America/New_York"))
+        tz = ZoneInfo(str(config.get("close_timezone") or "America/New_York"))
         session = datetime.now(tz).strftime("%Y-%m-%d")
         lines = [
             f"收盘日线 {session}",
@@ -337,7 +365,7 @@ class MoomooStrategyRunner:
 
             self.monitor.log(
                 f"{code} | 价:{price:.2f} | {action} | {reason} | "
-                f"ADX={extra.get('adx')} RSI={extra.get('rsi')} 仓={st.get('vol')}"
+                f"{_indicator_line(extra, st.get('vol'))}"
             )
 
             if action == "buy":
