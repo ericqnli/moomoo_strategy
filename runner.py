@@ -154,6 +154,9 @@ class MoomooStrategyRunner:
                     data = json.load(f)
             except Exception as e:
                 print(f"读取 {POS_FILE} 失败: {e}")
+        for code, st in list(data.items()):
+            if isinstance(st, dict) and "last_div_key" not in st:
+                st["last_div_key"] = ""
         for code in self._static_symbols():
             if code not in data:
                 data[code] = empty_pos_state()
@@ -373,11 +376,15 @@ class MoomooStrategyRunner:
                 sell_vol = min(sell_vol, int(st["vol"]))
                 ok = self.executor.place_order(code, sell_vol, side="SELL")
                 if ok:
+                    if reason == "MACD顶背离":
+                        st["last_div_key"] = extra.get("div_key") or st.get("last_div_key") or ""
                     st["vol"] = float(st["vol"]) - sell_vol
                     if result.get("ratio", 1) < 1:
                         st["half_sold"] = True
                     if st["vol"] <= 0:
+                        kept_div = st.get("last_div_key", "")
                         self.positions[code] = empty_pos_state()
+                        self.positions[code]["last_div_key"] = kept_div
                     stats["sells"].append(f"{code} {sell_vol}股 @{_fmt(price)} {reason}")
                     self.monitor.notify(
                         f"🔴 {code} 卖出 {sell_vol} @ {price:.2f} {reason}"
