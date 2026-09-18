@@ -135,6 +135,7 @@ def decide(df, pos_state, config):
         "curr_d": d.iloc[-1],
         "prev_d": d.iloc[-2],
         "curr_j": j.iloc[-1],
+        "prev_j": j.iloc[-2],
         "curr_adx": adx.iloc[-1],
         "curr_atr": atr.iloc[-1],
     }
@@ -153,6 +154,7 @@ def decide(df, pos_state, config):
     curr_d = float(vals["curr_d"])
     prev_d = float(vals["prev_d"]) if not pd.isna(vals["prev_d"]) else None
     curr_j = float(vals["curr_j"]) if not pd.isna(vals["curr_j"]) else None
+    prev_j = float(vals["prev_j"]) if not pd.isna(vals["prev_j"]) else None
     curr_adx = float(vals["curr_adx"]) if not pd.isna(vals["curr_adx"]) else None
     curr_atr = float(vals["curr_atr"]) if not pd.isna(vals["curr_atr"]) else None
     curr_dif = float(vals["curr_dif"])
@@ -178,10 +180,15 @@ def decide(df, pos_state, config):
 
     macd_green_shrinking = prev_hist < 0 and curr_hist < 0 and curr_hist > prev_hist
     kdj_golden = prev_k is not None and prev_d is not None and prev_k <= prev_d and curr_k > curr_d
-    kdj_oversold = curr_k < float(config.get("kdj_k_oversold", 30)) or (
-        curr_j is not None and curr_j < float(config.get("kdj_j_oversold", 20))
+    k_oversold = float(config.get("kdj_k_oversold", 30))
+    j_oversold = float(config.get("kdj_j_oversold", 20))
+    kdj_recent_oversold = (
+        curr_k < k_oversold
+        or (prev_k is not None and prev_k < k_oversold)
+        or (curr_j is not None and curr_j < j_oversold)
+        or (prev_j is not None and prev_j < j_oversold)
     )
-    kdj_ok = kdj_golden and kdj_oversold
+    kdj_ok = kdj_golden and kdj_recent_oversold
     rsi_ok = curr_rsi <= float(config.get("rsi_oversold", 35)) and prev_rsi is not None and curr_rsi > prev_rsi
 
     mode = config.get("regime_mode", "auto")

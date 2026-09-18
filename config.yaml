@@ -39,6 +39,7 @@ rsi_oversold: 35
 kdj_n: 9
 kdj_m1: 3
 kdj_m2: 3
+# 当前 KDJ 金叉，且当前或前一根 K/J 处于对应超卖区，才可触发 KDJ 买入。
 kdj_k_oversold: 30
 kdj_j_oversold: 20
 adx_period: 14
