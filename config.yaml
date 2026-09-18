@@ -66,6 +66,8 @@ max_hold_days: 30
 
 div_lookback: 30
 div_peak_order: 3
+# p2 右边 3 根走完后，允许触发的根数（含确认当日）。2 = 确认当日 + 下一根
+div_confirm_bars: 2
 death_cross_sell_ratio: 0.5
 
 enable_repeat_buy: true

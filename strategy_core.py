@@ -1,7 +1,8 @@
 # strategy_core.py
 # QMT Macd_V1 买卖规则（独立实现，不依赖 QMT / talib）
 # 买：MACD 绿柱缩短 + ADX 切换 KDJ/RSI 超卖反转
-# 卖：止损/止盈/移动止盈/时间止损（默认关）→ 顶背离全平 → 死叉半仓
+# 卖：止损/止盈/移动止盈/时间止损（默认关）→ 顶背离全平→ 死叉半仓
+# 顶背离：同一对高点只卖一次；仅在 p2 确认后的短窗口内触发
 
 import numpy as np
 import pandas as pd
@@ -64,21 +65,33 @@ def calc_adx(high, low, close, period=14):
     return adx
 
 
-def detect_macd_top_divergence(close, dif, lookback=30, peak_order=3):
+def detect_macd_top_divergence(close, dif, lookback=30, peak_order=3, confirm_bars=2):
+    """返回 (hit, div_key)。div_key 用两个高点收盘标识一对高点。
+    仅当 p2 右边 peak_order 根已走完，且距确认日不超过 confirm_bars-1 根时才 hit。
+    """
+    empty = (False, "")
     if len(close) < lookback + 5 or len(dif) < lookback + 5:
-        return False
+        return empty
     c = np.asarray(close[-lookback:], dtype=float)
     d = np.asarray(dif[-lookback:], dtype=float)
     if np.any(np.isnan(c)) or np.any(np.isnan(d)):
-        return False
+        return empty
     peaks = []
     for i in range(peak_order, len(c) - peak_order):
         if c[i] == np.max(c[i - peak_order : i + peak_order + 1]):
             peaks.append(i)
     if len(peaks) < 2:
-        return False
+        return empty
     p1, p2 = peaks[-2], peaks[-1]
-    return bool(c[p2] > c[p1] * 1.001 and d[p2] < d[p1] * 0.995)
+    key = f"{c[p1]:.4f}|{c[p2]:.4f}"
+    cond = bool(c[p2] > c[p1] * 1.001 and d[p2] < d[p1] * 0.995)
+    if not cond:
+        return False, key
+    confirm_idx = p2 + int(peak_order)
+    bars_since = (len(c) - 1) - confirm_idx
+    if bars_since < 0 or bars_since >= int(confirm_bars):
+        return False, key
+    return True, key
 
 
 def empty_pos_state():
@@ -91,6 +104,7 @@ def empty_pos_state():
         "bars_held": 0,
         "entry_atr": 0.0,
         "buy_time": "",
+        "last_div_key": "",
     }
 
 
@@ -218,6 +232,7 @@ def decide(df, pos_state, config):
         "atr": curr_atr,
         "vol_ratio": vol_ratio,
         "trigger_by": trigger_by,
+        "div_key": "",
     }
 
     st = pos_state or empty_pos_state()
@@ -258,11 +273,19 @@ def decide(df, pos_state, config):
                 sell_reason = f"移动止盈(回撤{drawdown * 100:.2f}%)"
                 sell_ratio = 1.0
 
-        if sell_reason is None and detect_macd_top_divergence(
+        hit, div_key = detect_macd_top_divergence(
             close.values,
             dif.values,
             lookback=int(config.get("div_lookback", 30)),
             peak_order=int(config.get("div_peak_order", 3)),
+            confirm_bars=int(config.get("div_confirm_bars", 2)),
+        )
+        extra["div_key"] = div_key
+        if (
+            sell_reason is None
+            and hit
+            and div_key
+            and div_key != str(st.get("last_div_key") or "")
         ):
             sell_reason = "MACD顶背离"
             sell_ratio = 1.0
