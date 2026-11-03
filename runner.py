@@ -1,7 +1,7 @@
-# runner_v2.7.py
-# moomoo 壳 + 国金 QMT Macd_V1 买卖规则
+# runner.py
+# moomoo 壳。日线：MA5 金叉 MA10 买 1 份，死叉 MA10 卖 0.5 份，死叉 MA120 全卖。
 # Paper 默认。持仓状态写入 positions.json。
-# 默认 run_schedule=close：等美股常规收盘后跑一轮并退出。
+# 信号只用已收盘的日 K，同一根 K 只成交一次。
 
 from moomoo import *
 import json
@@ -17,7 +17,7 @@ import yaml
 from executor import Executor
 from monitor import Monitor
 from risk_manager import RiskManager
-from strategy_core import decide, empty_pos_state
+from strategy_core import apply_buy, decide, empty_pos_state, normalize_pos_state, plan_sell
 
 
 POS_FILE = "positions.json"
@@ -63,31 +63,10 @@ def _fmt(v, digits=2):
         return "-"
 
 
-def _iint(v):
-    try:
-        if v is None:
-            return "-"
-        return str(int(round(float(v))))
-    except (TypeError, ValueError):
-        return "-"
-
-
-def _signed(v):
-    try:
-        if v is None:
-            return "-"
-        return f"{float(v):+.2f}"
-    except (TypeError, ValueError):
-        return "-"
-
-
 def _indicator_line(extra, vol):
-    hist_s = f"{_signed(extra.get('prev_hist'))}→{_signed(extra.get('hist'))}"
-    dif_s = f"{_signed(extra.get('prev_dif'))}→{_signed(extra.get('dif'))}"
     return (
-        f"ADX={_iint(extra.get('adx'))} RSI={_iint(extra.get('rsi'))} "
-        f"KDJ={_iint(extra.get('k'))}/{_iint(extra.get('d'))}/{_iint(extra.get('j'))} "
-        f"柱{hist_s} DIF{dif_s} 仓={vol}"
+        f"MA5={_fmt(extra.get('ma5'))} MA10={_fmt(extra.get('ma10'))} "
+        f"MA120={_fmt(extra.get('ma120'))} 仓={vol}股/{_fmt(extra.get('units'), 1)}份"
     )
 
 
@@ -183,8 +162,8 @@ class MoomooStrategyRunner:
             except Exception as e:
                 print(f"读取 {POS_FILE} 失败: {e}")
         for code, st in list(data.items()):
-            if isinstance(st, dict) and "last_div_key" not in st:
-                st["last_div_key"] = ""
+            if isinstance(st, dict):
+                normalize_pos_state(st)
         for code in self._static_symbols():
             if code not in data:
                 data[code] = empty_pos_state()
@@ -289,7 +268,8 @@ class MoomooStrategyRunner:
     def get_history(self, code):
         full_code = _full_code(code)
         end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+        lookback = int(self.config.get("history_days", 520))
+        start = (datetime.now() - timedelta(days=lookback)).strftime("%Y-%m-%d")
         ret, data, _ = self.quote_ctx.request_history_kline(
             full_code,
             start=start,
@@ -303,6 +283,20 @@ class MoomooStrategyRunner:
             return df
         print(f"❌ {code} K线获取失败")
         return None
+
+    def _completed_bars(self, df):
+        """收盘前最后一根是未走完的当日 K，信号只用它前面的已收盘日线。"""
+        if df is None or len(df) == 0 or "time_key" not in df.columns:
+            return df
+        tz = ZoneInfo(str(self.config.get("close_timezone") or "America/New_York"))
+        now = datetime.now(tz)
+        raw = str(self.config.get("close_time") or "16:15")
+        hh, mm = [int(x) for x in raw.split(":")[:2]]
+        close_at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        last = str(df["time_key"].iloc[-1])[:10]
+        if last == now.date().isoformat() and now < close_at:
+            return df.iloc[:-1].reset_index(drop=True)
+        return df
 
     def _buy_qty(self, price):
         amount = float(self.config.get("buy_amount", 5000))
@@ -331,7 +325,7 @@ class MoomooStrategyRunner:
             if vol <= 0:
                 continue
             holds.append(
-                f"{code} {int(vol)}股 成本{_fmt(st.get('buy_price'))}"
+                f"{code} {int(vol)}股 {_fmt(st.get('units'), 1)}份 成本{_fmt(st.get('buy_price'))}"
             )
         if holds:
             lines.append("持仓 " + "；".join(holds))
@@ -350,18 +344,25 @@ class MoomooStrategyRunner:
         self.refresh_watchlist(force=True)
         codes = self._active_codes()
         stats = {"pool": len(codes), "buys": [], "sells": [], "none": 0, "fail": 0}
+        need = int(self.config.get("ma_slow", 120)) + 2
         for code in codes:
-            df = self.get_history(code)
-            if df is None or len(df) < 60:
+            raw = self.get_history(code)
+            df = self._completed_bars(raw)
+            if df is None or len(df) < need:
                 stats["fail"] += 1
                 continue
 
-            st = self.positions.setdefault(code, empty_pos_state())
+            st = normalize_pos_state(self.positions.setdefault(code, empty_pos_state()))
+            self.positions[code] = st
             result = decide(df, st, self.config)
             extra = result.get("extra") or {}
             price = extra.get("price", float(df["close"].iloc[-1]))
             action = result["action"]
             reason = result["reason"]
+            bar = str(extra.get("bar") or "")
+            if action in ("buy", "sell") and bar and st.get("last_bar") == bar:
+                action = "none"
+                reason = "本根已处理"
 
             self.monitor.log(
                 f"{code} | 价:{price:.2f} | {action} | {reason} | "
@@ -375,47 +376,32 @@ class MoomooStrategyRunner:
                     continue
                 ok = self.executor.place_order(code, qty, side="BUY")
                 if ok:
-                    old = float(st.get("vol") or 0)
-                    if old > 0:
-                        st["buy_price"] = (st["buy_price"] * old + price * qty) / (old + qty)
-                        st["high_since_entry"] = max(float(st.get("high_since_entry") or 0), price)
-                    else:
-                        st["buy_price"] = price
-                        st["bars_held"] = 0
-                        st["high_since_entry"] = price
-                        st["half_sold"] = False
-                        st["entry_atr"] = extra.get("entry_atr") or 0.0
-                        st["buy_time"] = datetime.now().strftime("%Y-%m-%d")
-                    st["vol"] = old + qty
-                    st["buy_count"] = int(st.get("buy_count") or 0) + 1
-                    stats["buys"].append(f"{code} {qty}股 @{_fmt(price)} {reason}")
+                    apply_buy(st, qty, price, bar)
+                    extra["units"] = st.get("units")
+                    stats["buys"].append(
+                        f"{code} {qty}股 @{_fmt(price)} {reason} 共{_fmt(st.get('units'), 1)}份"
+                    )
                     self.monitor.notify(
-                        f"🟢 {code} 买入 {qty} @ {price:.2f} {reason}"
+                        f"🟢 {code} 买入 {qty} @ {price:.2f} {reason} 持有{_fmt(st.get('units'), 1)}份"
                     )
                 else:
                     stats["fail"] += 1
 
             elif action == "sell" and float(st.get("vol") or 0) > 0:
-                sell_vol = int(float(st["vol"]) * float(result.get("ratio") or 1.0))
-                sell_vol = max(sell_vol, 1) if result.get("ratio", 0) >= 1 else sell_vol
+                sell_vol, sold_state = plan_sell(st, result.get("units"), bar)
                 if sell_vol <= 0:
                     stats["none"] += 1
                     continue
-                sell_vol = min(sell_vol, int(st["vol"]))
                 ok = self.executor.place_order(code, sell_vol, side="SELL")
                 if ok:
-                    if reason == "MACD顶背离":
-                        st["last_div_key"] = extra.get("div_key") or st.get("last_div_key") or ""
-                    st["vol"] = float(st["vol"]) - sell_vol
-                    if result.get("ratio", 1) < 1:
-                        st["half_sold"] = True
-                    if st["vol"] <= 0:
-                        kept_div = st.get("last_div_key", "")
-                        self.positions[code] = empty_pos_state()
-                        self.positions[code]["last_div_key"] = kept_div
-                    stats["sells"].append(f"{code} {sell_vol}股 @{_fmt(price)} {reason}")
+                    st.clear()
+                    st.update(sold_state)
+                    extra["units"] = st.get("units")
+                    stats["sells"].append(
+                        f"{code} {sell_vol}股 @{_fmt(price)} {reason} 剩{_fmt(st.get('units'), 1)}份"
+                    )
                     self.monitor.notify(
-                        f"🔴 {code} 卖出 {sell_vol} @ {price:.2f} {reason}"
+                        f"🔴 {code} 卖出 {sell_vol} @ {price:.2f} {reason} 剩余{_fmt(st.get('units'), 1)}份"
                     )
                 else:
                     stats["fail"] += 1

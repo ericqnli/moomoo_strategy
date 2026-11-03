@@ -1,5 +1,5 @@
-# moomoo_strategy config v2.7
-# 买卖规则对齐国金 QMT Macd_V1（默认开关与 QMT 一致）
+# moomoo_strategy config
+# 日线：MA5 上穿 MA10 买 1 份，下穿 MA10 卖 0.5 份，下穿 MA120 全部卖出
 
 # 固定标的，与自选分组合并去重；不要把 OpenD 拉到的名单写回这里
 symbols:
@@ -20,8 +20,8 @@ watchlist_markets:
 watchlist_refresh_seconds: 900
 
 ktype: K_DAY
-history_days: 400
-max_count: 300
+history_days: 520
+max_count: 400
 
 # close = 等美股常规收盘后跑一轮并退出
 # loop  = 按 sleep_seconds 循环（旧行为）
@@ -30,50 +30,13 @@ close_timezone: America/New_York
 close_time: "16:15"
 sleep_seconds: 1800
 
-macd_fast: 12
-macd_slow: 26
-macd_signal: 9
+# 收盘价简单均线
+ma_fast: 5
+ma_mid: 10
+ma_slow: 120
 
-rsi_period: 6
-rsi_oversold: 35
-kdj_n: 9
-kdj_m1: 3
-kdj_m2: 3
-# 当前 KDJ 金叉，且当前或前一根 K/J 处于对应超卖区，才可触发 KDJ 买入。
-kdj_k_oversold: 30
-kdj_j_oversold: 20
-adx_period: 14
-adx_trend: 25
-adx_range: 20
-regime_mode: auto
-
-use_volume_filter: false
-volume_mult: 1.2
-volume_ma_period: 20
-
-use_stop_loss: false
-use_take_profit: false
-use_trailing: false
-use_time_stop: false
-stop_mode: pct
-stop_loss_pct: 0.08
-take_profit_pct: 0.18
-atr_period: 14
-stop_atr_mult: 2.0
-take_atr_mult: 3.5
-trail_pct: 0.08
-max_hold_days: 30
-
-div_lookback: 30
-div_peak_order: 3
-# p2 右边 3 根走完后，允许触发的根数（含确认当日）。2 = 确认当日 + 下一根
-div_confirm_bars: 2
-death_cross_sell_ratio: 0.5
-
-enable_repeat_buy: true
-max_buy_count: 3
+# 一份的金额。死叉 MA10 卖其中半份股数，不是把总仓位砍半。
 buy_amount: 5000
-max_position_pct: 0.35
 
 trade_mode: paper
 

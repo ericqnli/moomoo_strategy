@@ -1,326 +1,223 @@
 # strategy_core.py
-# QMT Macd_V1 买卖规则（独立实现，不依赖 QMT / talib）
-# 买：MACD 绿柱缩短 + ADX 切换 KDJ/RSI 超卖反转
-# 卖：止损/止盈/移动止盈/时间止损（默认关）→ 顶背离全平→ 死叉半仓
-# 顶背离：同一对高点只卖一次；仅在 p2 确认后的短窗口内触发
+# 日线均线：MA5 上穿 MA10 买 1 份，下穿 MA10 卖 0.5 份，下穿 MA120 全部卖出。
+# 一份 = 一次 buy_amount 买入的股数。半份按先进先出从各笔里扣。
 
-import numpy as np
+import math
+
 import pandas as pd
-
-
-def _ema(series, span):
-    return series.ewm(span=span, adjust=False).mean()
-
-
-def calc_macd(close, fast=12, slow=26, signal=9):
-    dif = _ema(close, fast) - _ema(close, slow)
-    dea = _ema(dif, signal)
-    hist = dif - dea
-    return dif, dea, hist
-
-
-def calc_rsi(close, period=6):
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-
-def calc_kdj(high, low, close, n=9, m1=3, m2=3):
-    lowest = low.rolling(n).min()
-    highest = high.rolling(n).max()
-    rsv = (close - lowest) / (highest - lowest).replace(0, np.nan) * 100
-    k = rsv.ewm(alpha=1 / m1, adjust=False).mean()
-    d = k.ewm(alpha=1 / m2, adjust=False).mean()
-    j = 3 * k - 2 * d
-    return k, d, j
-
-
-def calc_atr(high, low, close, period=14):
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-
-
-def calc_adx(high, low, close, period=14):
-    up = high.diff()
-    down = -low.diff()
-    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
-    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
-    atr = calc_atr(high, low, close, period)
-    plus_di = 100 * pd.Series(plus_dm, index=close.index).ewm(
-        alpha=1 / period, min_periods=period, adjust=False
-    ).mean() / atr
-    minus_di = 100 * pd.Series(minus_dm, index=close.index).ewm(
-        alpha=1 / period, min_periods=period, adjust=False
-    ).mean() / atr
-    dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan) * 100
-    adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    return adx
-
-
-def detect_macd_top_divergence(close, dif, lookback=30, peak_order=3, confirm_bars=2):
-    """返回 (hit, div_key)。div_key 用两个高点收盘标识一对高点。
-    仅当 p2 右边 peak_order 根已走完，且距确认日不超过 confirm_bars-1 根时才 hit。
-    """
-    empty = (False, "")
-    if len(close) < lookback + 5 or len(dif) < lookback + 5:
-        return empty
-    c = np.asarray(close[-lookback:], dtype=float)
-    d = np.asarray(dif[-lookback:], dtype=float)
-    if np.any(np.isnan(c)) or np.any(np.isnan(d)):
-        return empty
-    peaks = []
-    for i in range(peak_order, len(c) - peak_order):
-        if c[i] == np.max(c[i - peak_order : i + peak_order + 1]):
-            peaks.append(i)
-    if len(peaks) < 2:
-        return empty
-    p1, p2 = peaks[-2], peaks[-1]
-    key = f"{c[p1]:.4f}|{c[p2]:.4f}"
-    cond = bool(c[p2] > c[p1] * 1.001 and d[p2] < d[p1] * 0.995)
-    if not cond:
-        return False, key
-    confirm_idx = p2 + int(peak_order)
-    bars_since = (len(c) - 1) - confirm_idx
-    if bars_since < 0 or bars_since >= int(confirm_bars):
-        return False, key
-    return True, key
 
 
 def empty_pos_state():
     return {
         "vol": 0,
+        "units": 0.0,
+        "lots": [],
         "buy_price": 0.0,
         "buy_count": 0,
-        "high_since_entry": 0.0,
-        "half_sold": False,
-        "bars_held": 0,
-        "entry_atr": 0.0,
         "buy_time": "",
-        "last_div_key": "",
+        "last_bar": "",
     }
+
+
+def normalize_pos_state(st):
+    if not isinstance(st, dict):
+        st = empty_pos_state()
+    base = empty_pos_state()
+    for key, value in base.items():
+        st.setdefault(key, value)
+    vol = float(st.get("vol") or 0)
+    if vol > 0 and not st.get("lots"):
+        st["lots"] = [{
+            "units": 1.0,
+            "shares": vol,
+            "price": float(st.get("buy_price") or 0),
+        }]
+        st["units"] = 1.0
+    elif vol <= 0:
+        st["lots"] = []
+        st["units"] = 0.0
+        st["vol"] = 0
+    return st
+
+
+def _bar_date(value):
+    text = str(value or "").strip()
+    return text[:10]
+
+
+def _sma_pair(close, window):
+    ma = close.rolling(window).mean()
+    curr = ma.iloc[-1]
+    prev = ma.iloc[-2]
+    if pd.isna(curr) or pd.isna(prev):
+        return None, None
+    return float(prev), float(curr)
+
+
+def _crossed_up(prev_fast, fast, prev_slow, slow):
+    return prev_fast <= prev_slow and fast > slow
+
+
+def _crossed_down(prev_fast, fast, prev_slow, slow):
+    return prev_fast >= prev_slow and fast < slow
 
 
 def decide(df, pos_state, config):
-    need = 60
-    if df is None or len(df) < need:
-        return {"action": "none", "ratio": 0.0, "reason": "数据不足", "extra": {}}
+    fast_n = int(config.get("ma_fast", 5))
+    mid_n = int(config.get("ma_mid", 10))
+    slow_n = int(config.get("ma_slow", 120))
+    need = slow_n + 2
+    if df is None or len(df) < need or "close" not in df.columns:
+        return {"action": "none", "units": 0.0, "reason": "数据不足", "extra": {}}
 
     close = df["close"].astype(float)
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    volume = df["volume"].astype(float) if "volume" in df.columns else None
-
-    fast = int(config.get("macd_fast", 12))
-    slow = int(config.get("macd_slow", 26))
-    signal = int(config.get("macd_signal", 9))
-    rsi_period = int(config.get("rsi_period", 6))
-    kdj_n = int(config.get("kdj_n", 9))
-    kdj_m1 = int(config.get("kdj_m1", 3))
-    kdj_m2 = int(config.get("kdj_m2", 3))
-    adx_period = int(config.get("adx_period", 14))
-    atr_period = int(config.get("atr_period", 14))
-
-    dif, dea, hist = calc_macd(close, fast, slow, signal)
-    rsi = calc_rsi(close, rsi_period)
-    k, d, j = calc_kdj(high, low, close, kdj_n, kdj_m1, kdj_m2)
-    adx = calc_adx(high, low, close, adx_period)
-    atr = calc_atr(high, low, close, atr_period)
-
-    curr_close = float(close.iloc[-1])
-    vals = {
-        "curr_dif": dif.iloc[-1],
-        "curr_dea": dea.iloc[-1],
-        "prev_dif": dif.iloc[-2],
-        "prev_dea": dea.iloc[-2],
-        "curr_hist": hist.iloc[-1],
-        "prev_hist": hist.iloc[-2],
-        "curr_rsi": rsi.iloc[-1],
-        "prev_rsi": rsi.iloc[-2],
-        "curr_k": k.iloc[-1],
-        "prev_k": k.iloc[-2],
-        "curr_d": d.iloc[-1],
-        "prev_d": d.iloc[-2],
-        "curr_j": j.iloc[-1],
-        "prev_j": j.iloc[-2],
-        "curr_adx": adx.iloc[-1],
-        "curr_atr": atr.iloc[-1],
-    }
-    if any(pd.isna(v) for v in [
-        vals["curr_dif"], vals["curr_dea"], vals["curr_hist"], vals["prev_hist"],
-        vals["curr_rsi"], vals["curr_k"], vals["curr_d"],
-    ]):
-        return {"action": "none", "ratio": 0.0, "reason": "指标NaN", "extra": {}}
-
-    curr_hist = float(vals["curr_hist"])
-    prev_hist = float(vals["prev_hist"])
-    curr_rsi = float(vals["curr_rsi"])
-    prev_rsi = float(vals["prev_rsi"]) if not pd.isna(vals["prev_rsi"]) else None
-    curr_k = float(vals["curr_k"])
-    prev_k = float(vals["prev_k"]) if not pd.isna(vals["prev_k"]) else None
-    curr_d = float(vals["curr_d"])
-    prev_d = float(vals["prev_d"]) if not pd.isna(vals["prev_d"]) else None
-    curr_j = float(vals["curr_j"]) if not pd.isna(vals["curr_j"]) else None
-    prev_j = float(vals["prev_j"]) if not pd.isna(vals["prev_j"]) else None
-    curr_adx = float(vals["curr_adx"]) if not pd.isna(vals["curr_adx"]) else None
-    curr_atr = float(vals["curr_atr"]) if not pd.isna(vals["curr_atr"]) else None
-    curr_dif = float(vals["curr_dif"])
-    curr_dea = float(vals["curr_dea"])
-    prev_dif = float(vals["prev_dif"]) if not pd.isna(vals["prev_dif"]) else None
-    prev_dea = float(vals["prev_dea"]) if not pd.isna(vals["prev_dea"]) else None
-
-    vol_ok = True
-    vol_ratio = None
-    if config.get("use_volume_filter", False) and volume is not None:
-        ma_p = int(config.get("volume_ma_period", 20))
-        vol_ma = volume.rolling(ma_p).mean().iloc[-1]
-        if not pd.isna(vol_ma) and vol_ma > 0:
-            vol_ratio = float(volume.iloc[-1] / vol_ma)
-            vol_ok = vol_ratio >= float(config.get("volume_mult", 1.2))
-
-    regime = "mid"
-    if curr_adx is not None:
-        if curr_adx > float(config.get("adx_trend", 25)):
-            regime = "trend"
-        elif curr_adx < float(config.get("adx_range", 20)):
-            regime = "range"
-
-    macd_green_shrinking = prev_hist < 0 and curr_hist < 0 and curr_hist > prev_hist
-    kdj_golden = prev_k is not None and prev_d is not None and prev_k <= prev_d and curr_k > curr_d
-    k_oversold = float(config.get("kdj_k_oversold", 30))
-    j_oversold = float(config.get("kdj_j_oversold", 20))
-    kdj_recent_oversold = (
-        curr_k < k_oversold
-        or (prev_k is not None and prev_k < k_oversold)
-        or (curr_j is not None and curr_j < j_oversold)
-        or (prev_j is not None and prev_j < j_oversold)
-    )
-    kdj_ok = kdj_golden and kdj_recent_oversold
-    rsi_ok = curr_rsi <= float(config.get("rsi_oversold", 35)) and prev_rsi is not None and curr_rsi > prev_rsi
-
-    mode = config.get("regime_mode", "auto")
-    if mode == "kdj":
-        entry_trigger, trigger_by = kdj_ok, "KDJ"
-    elif mode == "rsi":
-        entry_trigger, trigger_by = rsi_ok, "RSI"
-    elif mode == "both":
-        entry_trigger = kdj_ok or rsi_ok
-        trigger_by = "KDJ" if kdj_ok else ("RSI" if rsi_ok else "")
-    elif regime == "range":
-        entry_trigger, trigger_by = kdj_ok, "KDJ(震荡)"
-    elif regime == "trend":
-        entry_trigger, trigger_by = rsi_ok, "RSI(趋势)"
-    else:
-        entry_trigger, trigger_by = kdj_ok and rsi_ok, "KDJ|RSI(中间)"
+    prev_fast, fast = _sma_pair(close, fast_n)
+    prev_mid, mid = _sma_pair(close, mid_n)
+    prev_slow, slow = _sma_pair(close, slow_n)
+    price = float(close.iloc[-1])
+    bar = ""
+    if "time_key" in df.columns:
+        bar = _bar_date(df["time_key"].iloc[-1])
 
     extra = {
-        "price": curr_close,
-        "hist": curr_hist,
-        "prev_hist": prev_hist,
-        "dif": curr_dif,
-        "prev_dif": prev_dif,
-        "dea": curr_dea,
-        "rsi": curr_rsi,
-        "k": curr_k,
-        "d": curr_d,
-        "j": curr_j,
-        "adx": curr_adx,
-        "regime": regime,
-        "atr": curr_atr,
-        "vol_ratio": vol_ratio,
-        "trigger_by": trigger_by,
-        "div_key": "",
+        "price": price,
+        "bar": bar,
+        "ma5": fast,
+        "ma10": mid,
+        "ma120": slow,
+        "units": float((pos_state or {}).get("units") or 0),
     }
+    if None in (prev_fast, fast, prev_mid, mid, prev_slow, slow):
+        return {"action": "none", "units": 0.0, "reason": "均线不足", "extra": extra}
 
     st = pos_state or empty_pos_state()
-    has_pos = float(st.get("vol", 0) or 0) > 0
+    held = float(st.get("vol") or 0) > 0 and float(st.get("units") or 0) > 0
+    golden = _crossed_up(prev_fast, fast, prev_mid, mid)
+    death_mid = _crossed_down(prev_fast, fast, prev_mid, mid)
+    death_slow = _crossed_down(prev_fast, fast, prev_slow, slow)
 
-    if has_pos:
-        st["high_since_entry"] = max(float(st.get("high_since_entry") or 0), curr_close)
-        st["bars_held"] = int(st.get("bars_held") or 0) + 1
-        buy_price = float(st.get("buy_price") or 0)
-        pnl = (curr_close - buy_price) / buy_price if buy_price > 0 else None
-        high_since = float(st.get("high_since_entry") or 0)
-        entry_atr = float(st.get("entry_atr") or 0)
-        sell_reason = None
-        sell_ratio = 0.0
-        stop_mode = config.get("stop_mode", "pct")
+    if held and death_slow:
+        extra["units"] = float(st.get("units") or 0)
+        return {
+            "action": "sell",
+            "units": extra["units"],
+            "reason": "MA5死叉MA120",
+            "extra": extra,
+        }
+    if held and death_mid:
+        sell_units = min(0.5, float(st.get("units") or 0))
+        return {
+            "action": "sell",
+            "units": sell_units,
+            "reason": "MA5死叉MA10",
+            "extra": extra,
+        }
+    if golden and not death_slow:
+        return {"action": "buy", "units": 1.0, "reason": "MA5金叉MA10", "extra": extra}
 
-        if config.get("use_stop_loss", False) and pnl is not None:
-            if stop_mode == "atr" and entry_atr > 0:
-                if curr_close <= buy_price - float(config.get("stop_atr_mult", 2.0)) * entry_atr:
-                    sell_reason = "ATR止损"
-                    sell_ratio = 1.0
-            elif pnl <= -float(config.get("stop_loss_pct", 0.08)):
-                sell_reason = "百分比止损"
-                sell_ratio = 1.0
+    return {"action": "none", "units": 0.0, "reason": "无信号", "extra": extra}
 
-        if sell_reason is None and config.get("use_take_profit", False) and pnl is not None:
-            if stop_mode == "atr" and entry_atr > 0:
-                if curr_close >= buy_price + float(config.get("take_atr_mult", 3.5)) * entry_atr:
-                    sell_reason = "ATR止盈"
-                    sell_ratio = 1.0
-            elif pnl >= float(config.get("take_profit_pct", 0.18)):
-                sell_reason = "百分比止盈"
-                sell_ratio = 1.0
 
-        if sell_reason is None and config.get("use_trailing", False) and high_since > 0:
-            drawdown = (high_since - curr_close) / high_since
-            if drawdown >= float(config.get("trail_pct", 0.08)):
-                sell_reason = f"移动止盈(回撤{drawdown * 100:.2f}%)"
-                sell_ratio = 1.0
+def _sync_avg(st):
+    vol = 0.0
+    cost = 0.0
+    units = 0.0
+    for lot in st.get("lots") or []:
+        shares = float(lot.get("shares") or 0)
+        vol += shares
+        cost += shares * float(lot.get("price") or 0)
+        units += float(lot.get("units") or 0)
+    st["vol"] = vol
+    st["units"] = units
+    st["buy_price"] = (cost / vol) if vol > 0 else 0.0
 
-        hit, div_key = detect_macd_top_divergence(
-            close.values,
-            dif.values,
-            lookback=int(config.get("div_lookback", 30)),
-            peak_order=int(config.get("div_peak_order", 3)),
-            confirm_bars=int(config.get("div_confirm_bars", 2)),
-        )
-        extra["div_key"] = div_key
-        if (
-            sell_reason is None
-            and hit
-            and div_key
-            and div_key != str(st.get("last_div_key") or "")
-        ):
-            sell_reason = "MACD顶背离"
-            sell_ratio = 1.0
 
-        if sell_reason is None and not st.get("half_sold", False):
-            death = (
-                prev_dif is not None
-                and prev_dea is not None
-                and prev_dif > prev_dea
-                and curr_dif < curr_dea
-            )
-            if death:
-                sell_reason = "MACD死叉"
-                sell_ratio = float(config.get("death_cross_sell_ratio", 0.5))
+def apply_buy(st, shares, price, bar):
+    shares = int(shares)
+    if shares <= 0:
+        return 0
+    st.setdefault("lots", [])
+    st["lots"].append({"units": 1.0, "shares": shares, "price": float(price)})
+    if not st.get("buy_time"):
+        st["buy_time"] = bar
+    st["buy_count"] = int(st.get("buy_count") or 0) + 1
+    st["last_bar"] = bar
+    _sync_avg(st)
+    return shares
 
-        if sell_reason is None and config.get("use_time_stop", False):
-            if int(st.get("bars_held") or 0) >= int(config.get("max_hold_days", 30)):
-                sell_reason = f"时间止损(持仓{st['bars_held']}天)"
-                sell_ratio = 1.0
 
-        extra["pnl"] = pnl
-        if sell_reason and sell_ratio > 0:
-            return {"action": "sell", "ratio": sell_ratio, "reason": sell_reason, "extra": extra}
+def _take_share_count(raw):
+    if raw <= 0:
+        return 0
+    shares = int(math.floor(raw + 0.5))
+    if shares < 1 and raw >= 0.5:
+        return 1
+    return shares
 
-    can_buy = (not has_pos) or (
-        config.get("enable_repeat_buy", True)
-        and int(st.get("buy_count") or 0) < int(config.get("max_buy_count", 3))
-    )
-    if can_buy and macd_green_shrinking and entry_trigger and vol_ok:
-        reason = f"绿柱缩短+{trigger_by}"
-        extra["entry_atr"] = curr_atr
-        return {"action": "buy", "ratio": 1.0, "reason": reason, "extra": extra}
 
-    return {"action": "none", "ratio": 0.0, "reason": "无信号", "extra": extra}
+def apply_sell(st, units, bar):
+    """按份数先进先出卖出。返回股数。units 大于等于当前份数时清空。"""
+    lots = list(st.get("lots") or [])
+    held_units = float(st.get("units") or 0)
+    if held_units <= 0 or not lots:
+        return 0
+    if units is None or float(units) >= held_units - 1e-9:
+        shares = _take_share_count(sum(float(lot.get("shares") or 0) for lot in lots))
+        st["lots"] = []
+        st["vol"] = 0
+        st["units"] = 0.0
+        st["buy_price"] = 0.0
+        st["buy_count"] = 0
+        st["buy_time"] = ""
+        st["last_bar"] = bar
+        return shares
+
+    left = float(units)
+    sold = 0
+    kept = []
+    for lot in lots:
+        lot_units = float(lot.get("units") or 0)
+        lot_shares = float(lot.get("shares") or 0)
+        if left <= 1e-12 or lot_units <= 0:
+            if lot_shares > 0 and lot_units > 0:
+                kept.append(lot)
+            continue
+        take_units = min(lot_units, left)
+        raw = lot_shares * (take_units / lot_units)
+        take_shares = min(_take_share_count(raw), int(round(lot_shares)))
+        sold += take_shares
+        remain_shares = lot_shares - take_shares
+        remain_units = lot_units - take_units
+        left -= take_units
+        if remain_units > 1e-9 and remain_shares > 0:
+            kept.append({
+                "units": remain_units,
+                "shares": remain_shares,
+                "price": lot.get("price"),
+            })
+    st["lots"] = kept
+    st["last_bar"] = bar
+    _sync_avg(st)
+    if float(st.get("vol") or 0) <= 0:
+        st["lots"] = []
+        st["vol"] = 0
+        st["units"] = 0.0
+        st["buy_price"] = 0.0
+        st["buy_count"] = 0
+        st["buy_time"] = ""
+    return sold
+
+
+def plan_sell(st, units, bar):
+    """算出卖出股数和卖出后的仓位，不改原持仓。"""
+    shadow = {
+        "lots": [dict(lot) for lot in (st.get("lots") or [])],
+        "vol": st.get("vol") or 0,
+        "units": st.get("units") or 0,
+        "buy_price": st.get("buy_price") or 0,
+        "buy_count": st.get("buy_count") or 0,
+        "buy_time": st.get("buy_time") or "",
+        "last_bar": st.get("last_bar") or "",
+    }
+    shares = apply_sell(shadow, units, bar)
+    return shares, shadow
