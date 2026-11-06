@@ -2,10 +2,10 @@
 # 日线：MA5 上穿 MA10 买 1 份，下穿 MA10 卖 0.5 份，下穿 MA120 全部卖出
 
 # 固定标的，与自选分组合并去重；不要把 OpenD 拉到的名单写回这里
-symbols:
-  - BRK.B
-  - SPY
-  - QQQ
+symbols: []
+#- BRK.B
+#- SPY
+#- QQQ
 
 # moomoo 自选自定义分组（名字须与 App 里一致）
 watchlist_groups:
