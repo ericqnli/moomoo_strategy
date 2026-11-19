@@ -1,5 +1,5 @@
 # strategy_core.py
-# 日线均线：MA5 上穿 MA10 买 1 份，下穿 MA10 卖 0.5 份，下穿 MA120 全部卖出。
+# 日线均线：MA5 上穿 MA10 买 1 份，下穿 MA10 卖 0.5 份，下穿 MA30 全部卖出。
 # 一份 = 一次 buy_amount 买入的股数。半份按先进先出从各笔里扣。
 
 import math
@@ -65,7 +65,7 @@ def _crossed_down(prev_fast, fast, prev_slow, slow):
 def decide(df, pos_state, config):
     fast_n = int(config.get("ma_fast", 5))
     mid_n = int(config.get("ma_mid", 10))
-    slow_n = int(config.get("ma_slow", 120))
+    slow_n = int(config.get("ma_slow", 30))
     need = slow_n + 2
     if df is None or len(df) < need or "close" not in df.columns:
         return {"action": "none", "units": 0.0, "reason": "数据不足", "extra": {}}
@@ -84,7 +84,7 @@ def decide(df, pos_state, config):
         "bar": bar,
         "ma5": fast,
         "ma10": mid,
-        "ma120": slow,
+        "ma30": slow,
         "units": float((pos_state or {}).get("units") or 0),
     }
     if None in (prev_fast, fast, prev_mid, mid, prev_slow, slow):
@@ -101,7 +101,7 @@ def decide(df, pos_state, config):
         return {
             "action": "sell",
             "units": extra["units"],
-            "reason": "MA5死叉MA120",
+            "reason": "MA5死叉MA30",
             "extra": extra,
         }
     if held and death_mid:

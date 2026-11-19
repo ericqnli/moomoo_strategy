@@ -1,5 +1,5 @@
 # moomoo_strategy config
-# 日线：MA5 上穿 MA10 买 1 份，下穿 MA10 卖 0.5 份，下穿 MA120 全部卖出
+# 日线：MA5 上穿 MA10 买 1 份，下穿 MA10 卖 0.5 份，下穿 MA30 全部卖出
 
 # 固定标的，与自选分组合并去重；不要把 OpenD 拉到的名单写回这里
 symbols: []
@@ -33,7 +33,7 @@ sleep_seconds: 1800
 # 收盘价简单均线
 ma_fast: 5
 ma_mid: 10
-ma_slow: 120
+ma_slow: 30
 
 # 一份的金额。死叉 MA10 卖其中半份股数，不是把总仓位砍半。
 buy_amount: 5000

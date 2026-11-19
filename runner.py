@@ -1,5 +1,5 @@
 # runner.py
-# moomoo 壳。日线：MA5 金叉 MA10 买 1 份，死叉 MA10 卖 0.5 份，死叉 MA120 全卖。
+# moomoo 壳。日线：MA5 金叉 MA10 买 1 份，死叉 MA10 卖 0.5 份，死叉 MA30 全卖。
 # Paper 默认。持仓状态写入 positions.json。
 # 信号只用已收盘的日 K，同一根 K 只成交一次。
 
@@ -65,7 +65,7 @@ def _fmt(v, digits=2):
 def _indicator_line(extra, vol):
     return (
         f"MA5={_fmt(extra.get('ma5'))} MA10={_fmt(extra.get('ma10'))} "
-        f"MA120={_fmt(extra.get('ma120'))} 仓={vol}股/{_fmt(extra.get('units'), 1)}份"
+        f"MA30={_fmt(extra.get('ma30'))} 仓={vol}股/{_fmt(extra.get('units'), 1)}份"
     )
 
 
@@ -353,7 +353,7 @@ class MoomooStrategyRunner:
         self.refresh_watchlist(force=True)
         codes = self._active_codes()
         stats = {"pool": len(codes), "buys": [], "sells": [], "none": 0, "fail": 0}
-        need = int(self.config.get("ma_slow", 120)) + 2
+        need = int(self.config.get("ma_slow", 30)) + 2
         for code in codes:
             raw = self.get_history(code)
             df = self._completed_bars(raw)
