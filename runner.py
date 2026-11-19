@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yaml
 
-from executor import Executor
 from monitor import Monitor
 from risk_manager import RiskManager
 from strategy_core import apply_buy, decide, empty_pos_state, normalize_pos_state, plan_sell
@@ -128,7 +127,8 @@ class MoomooStrategyRunner:
         self.quote_ctx = OpenQuoteContext()
         self.monitor = Monitor(self.config)
         self.risk = RiskManager(self.config)
-        self.executor = Executor(self.config)
+        self.trade_mode = str(self.config.get("trade_mode") or "paper").strip().lower()
+        print(f"[{datetime.now()}] 下单记录初始化完成 - 模式: {self.trade_mode}")
         self.positions = self._load_positions()
         self.watchlist_symbols = []
         self.universe = list(self._static_symbols())
@@ -298,6 +298,15 @@ class MoomooStrategyRunner:
             return df.iloc[:-1].reset_index(drop=True)
         return df
 
+    def _log_order(self, code, quantity, side="BUY"):
+        """Paper 只打印。Live 同样只打印，不向券商下单。"""
+        full_code = code if str(code).startswith("US.") else f"US.{code}"
+        if self.trade_mode == "paper":
+            print(f"[{datetime.now()}] [PAPER ORDER] {side} {quantity} shares of {code}")
+        else:
+            print(f"[{datetime.now()}] [LIVE ORDER] {side} {quantity} {full_code}")
+        return True
+
     def _buy_qty(self, price):
         amount = float(self.config.get("buy_amount", 5000))
         if price <= 0:
@@ -374,7 +383,7 @@ class MoomooStrategyRunner:
                 if qty <= 0:
                     stats["none"] += 1
                     continue
-                ok = self.executor.place_order(code, qty, side="BUY")
+                ok = self._log_order(code, qty, side="BUY")
                 if ok:
                     apply_buy(st, qty, price, bar)
                     extra["units"] = st.get("units")
@@ -392,7 +401,7 @@ class MoomooStrategyRunner:
                 if sell_vol <= 0:
                     stats["none"] += 1
                     continue
-                ok = self.executor.place_order(code, sell_vol, side="SELL")
+                ok = self._log_order(code, sell_vol, side="SELL")
                 if ok:
                     st.clear()
                     st.update(sold_state)
@@ -413,7 +422,7 @@ class MoomooStrategyRunner:
         self._send_close_report(stats)
 
     def close(self):
-        self.executor.close()
+        print(f"[{datetime.now()}] 下单记录已关闭")
         self.quote_ctx.close()
 
 
